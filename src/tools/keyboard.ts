@@ -1,4 +1,5 @@
-import { vmExecScript, vmSendKey, vmSendKeyCombo, SCANCODES } from "../vm.js";
+import { vmSendKey, vmSendKeyCombo, vmTypeText, SCANCODES } from "../vm.js";
+import { activateParallels } from "../helpers.js";
 
 export const typeTextTool = {
   name: "type_text",
@@ -45,10 +46,15 @@ export const pressKeyTool = {
 };
 
 export async function typeText(args: { text: string }) {
-  // Use PowerShell SendKeys inside the VM
-  const result = await vmExecScript("type.ps1", `-Text "${args.text}"`);
+  // Inject one keystroke per character via prlctl send-key-event. This is the
+  // only keyboard channel that reaches GA4 (clipboard/SendKeys via `prlctl exec`
+  // run in an isolated session and never reach the interactive desktop).
+  // Activate the Parallels window first so keystrokes route to the VM; the
+  // caller must have already clicked the target field to focus it.
+  await activateParallels();
+  await vmTypeText(args.text);
   return {
-    content: [{ type: "text" as const, text: `Typed: "${args.text}". ${result}` }],
+    content: [{ type: "text" as const, text: `Typed: "${args.text}" via key injection.` }],
   };
 }
 

@@ -1,4 +1,4 @@
-import { imageToVmCoords, vmExecScript } from "../vm.js";
+import { toAbsoluteCoords, macClick, macDoubleClick, macRightClick } from "../helpers.js";
 
 const coordProps = {
   x: { type: "number", description: "X coordinate in the screenshot image (pixels from left edge of screenshot)" },
@@ -37,25 +37,25 @@ export const rightClickTool = {
 };
 
 export async function click(args: { x: number; y: number }) {
-  const { vmX, vmY } = imageToVmCoords(args.x, args.y);
-  const result = await vmExecScript("click.ps1", `-X ${vmX} -Y ${vmY}`);
+  const { absX, absY } = await toAbsoluteCoords(args.x, args.y);
+  const result = await macClick(absX, absY);
   return {
-    content: [{ type: "text" as const, text: `Click at image (${args.x},${args.y}) → VM (${vmX},${vmY}). ${result}` }],
+    content: [{ type: "text" as const, text: `Click at image (${args.x},${args.y}) → macOS (${absX},${absY}). ${result}` }],
   };
 }
 
 export async function doubleClick(args: { x: number; y: number }) {
-  const { vmX, vmY } = imageToVmCoords(args.x, args.y);
-  const result = await vmExecScript("doubleclick.ps1", `-X ${vmX} -Y ${vmY}`);
+  const { absX, absY } = await toAbsoluteCoords(args.x, args.y);
+  const result = await macDoubleClick(absX, absY);
   return {
-    content: [{ type: "text" as const, text: `Double-click at image (${args.x},${args.y}) → VM (${vmX},${vmY}). ${result}` }],
+    content: [{ type: "text" as const, text: `Double-click at image (${args.x},${args.y}) → macOS (${absX},${absY}). ${result}` }],
   };
 }
 
 export async function rightClick(args: { x: number; y: number }) {
-  const { vmX, vmY } = imageToVmCoords(args.x, args.y);
-  const result = await vmExecScript("rightclick.ps1", `-X ${vmX} -Y ${vmY}`);
+  const { absX, absY } = await toAbsoluteCoords(args.x, args.y);
+  const result = await macRightClick(absX, absY);
   return {
-    content: [{ type: "text" as const, text: `Right-click at image (${args.x},${args.y}) → VM (${vmX},${vmY}). ${result}` }],
+    content: [{ type: "text" as const, text: `Right-click at image (${args.x},${args.y}) → macOS (${absX},${absY}). ${result}` }],
   };
 }

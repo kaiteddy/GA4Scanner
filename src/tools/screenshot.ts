@@ -1,7 +1,7 @@
 import { readFile, unlink } from "fs/promises";
 import { exec } from "../helpers.js";
 
-const VM_NAME = "Windows 11 (1)";
+const VM_NAME = "Win11Manual";
 
 export const screenshotTool = {
   name: "screenshot",
