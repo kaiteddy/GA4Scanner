@@ -29,8 +29,33 @@ export interface WindowInfo {
   name: string;
 }
 
+/**
+ * Screenshots keep working when the Mac screen is locked (prlctl reads the VM
+ * framebuffer), but clicks/keystrokes land on the lock screen — silently doing
+ * nothing to GA4. Detect the lock up front so tools fail with an actionable
+ * message instead of an AppleScript "Invalid index" error.
+ */
+export async function assertScreenUnlocked(): Promise<void> {
+  try {
+    const locked = await exec("python3", [
+      "-c",
+      "import Quartz; d = Quartz.CGSessionCopyCurrentDictionary(); print(bool(d and d.get('CGSSessionScreenIsLocked')))",
+    ]);
+    if (locked === "True") {
+      throw new Error(
+        "Mac screen is LOCKED — clicks and keystrokes cannot reach GA4 (screenshots still work). " +
+          "Ask the user to unlock the Mac, then retry."
+      );
+    }
+  } catch (e) {
+    if (e instanceof Error && e.message.startsWith("Mac screen is LOCKED")) throw e;
+    // Lock probe itself failed (no python3?) — don't block on it.
+  }
+}
+
 /** Get the Parallels VM window position and size */
 export async function getParallelsWindow(): Promise<WindowInfo> {
+  await assertScreenUnlocked();
   const script = `
 tell application "System Events"
     set prl to first process whose name is "prl_client_app"
@@ -40,7 +65,16 @@ tell application "System Events"
     set wSize to size of w
     return ((item 1 of wPos) as text) & "," & ((item 2 of wPos) as text) & "," & ((item 1 of wSize) as text) & "," & ((item 2 of wSize) as text) & "," & wName
 end tell`;
-  const result = await osascript(script);
+  let result: string;
+  try {
+    result = await osascript(script);
+  } catch (e) {
+    throw new Error(
+      "Parallels VM console window not found on the Mac (VM may be running headless after " +
+        'its window was closed). Reopen it: Parallels menu bar → Window → "Win11Manual". ' +
+        `Underlying error: ${e instanceof Error ? e.message.split("\n")[0] : e}`
+    );
+  }
   const parts = result.split(",").map((s) => s.trim());
   return {
     x: parseInt(parts[0], 10),
@@ -89,6 +123,7 @@ export async function toAbsoluteCoords(
  * active. This was the root cause of "flaky" clicks and lost keystrokes.
  */
 export async function activateParallels(): Promise<void> {
+  await assertScreenUnlocked();
   // Retry until Parallels is confirmed frontmost. Some machines have apps
   // (Mail/Safari notifications) that aggressively re-grab focus, so a single
   // activate + fixed sleep isn't enough — we verify and retry.

@@ -60,13 +60,22 @@ resolve and flag, not silently accept).
 **MOT — MAPPED (2026-07-03).** Not a labour/parts line; set via the **Extras** panel (right),
 and the fee lands on the **separate MOT line in Totals** (outside SubTotal/VAT — MOT is zero-rated).
 Fields (small targets — set each, then verify the displayed value):
-- **MOT** dropdown `(~1140,564)` — the type: **None / Full / Retest / Duplicate**; selecting a
-  type enables a fee/qty box beside it `(~1155,564)`.
-- **MOT Class** dropdown `(~1163,577)` — pricing tier that drives the fee: **TYPE A/B/C ×
-  RETAIL/TRADE** (TYPE A-RETAIL, TYPE A-TRADE, TYPE B-RETAIL, TYPE B-TRADE, TYPE C-RETAIL,
-  TYPE C-TRADE).
-- **MOT Status** dropdown `(~1163,590)` — result (Pass/Fail/etc. — enumerate full list on first build run).
-- **MOT Tester** dropdown `(~1163,603)` — tester name (enumerate on first build run).
+- **MOT** dropdown — the type: **None / Full / Retest / Duplicate** (CONFIRMED live 2026-07-03);
+  selecting a type enables a fee/qty box beside it `(~1155,564)`.
+- **MOT Class** dropdown — pricing tier that drives the fee: **TYPE A - RETAIL, TYPE A - TRADE,
+  TYPE B - RETAIL, TYPE B - TRADE, TYPE C - RETAIL, TYPE C - TRADE** (CONFIRMED live 2026-07-03).
+- **MOT Status** dropdown — result. Historical values in ga4.sqlite `Documents.motStatus`:
+  **Pass / Fail / Pass Retest / Fail Retest** (13k+ docs); confirm the live list on next run.
+- **MOT Tester** dropdown — tester name. DB stores staff GUIDs (6 distinct in
+  `Documents.staffMOTTester`); names must be enumerated from the live dropdown.
+
+**Extras-dropdown interaction (LEARNED 2026-07-03, hardened server):**
+- Click the **value box** (e.g. `(1120,565)` for MOT, `(1130,577)` for Class) — clicking the
+  tiny ▼ arrow does NOT open the popup.
+- The popup rows are ~6–7px tall in image space — **do not click rows**. With the popup open,
+  use **arrow keys + return** (verified: up ×1 + return moved Retest→Full correctly).
+- Screenshots can show a **stale popup overlay** after selection — press `escape`, click a
+  neutral spot, then re-screenshot to read the committed value before judging success.
 For exactness: set MOT type + Class(pricing tier) + Status + Tester + fee to match the web
 app's MOT, and confirm the Totals **MOT** line equals the web app's MOT amount. Still to
 enumerate on the fixed server: exact Status and Tester option lists.
@@ -118,6 +127,16 @@ flag for a human (an unissued draft is harmless; a wrong issued invoice is not).
 - **Store `ga4Number` on the web record immediately after Issue**; that record is now the
   idempotency guard.
 - VRM Lookup fills vehicle+customer together; mileage is separate. VAT auto-sets to T1 (20%).
+
+## Preconditions (check before driving)
+- **Mac screen must be unlocked.** When locked (`CGSSessionScreenIsLocked`), VM screenshots
+  still work (prlctl framebuffer) but clicks/keys CANNOT reach GA4 — System Events reports
+  0 Parallels windows ("Can't get window 1 of prl_client_app") and cliclick would hit the
+  lock screen. Detect via
+  `python3 -c "import Quartz; print(Quartz.CGSessionCopyCurrentDictionary().get('CGSSessionScreenIsLocked'))"`
+  → stop and ask the user to unlock; do not retry blind.
+- **Parallels console window must be open on the Mac** (VM can run headless after the window
+  is closed). If unlocked but windowless: Parallels menu bar → Window → "Win11Manual".
 
 ## Coordinates
 Image-space (1200-wide screenshot); the server maps them to the live window. They are stable
