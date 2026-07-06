@@ -12,9 +12,9 @@ GA4 invoice number so the web app prints the aligned number. Replaces the docNoC
 guess-ahead scheme — GA4 becomes the single source of truth for the number.
 
 Runs as an agent procedure over the `garage-assistant` MCP tools (screenshot, click,
-paste_field, press_key), on the hardened + speed-optimized server (cached activation,
-consolidated paste). The agent reads the screenshot to verify each step and to read the
-assigned number.
+paste_field, select_dropdown, click_menu_button, press_key), on the hardened +
+speed-optimized server (cached activation, consolidated paste/dropdown-select/menu-click).
+The agent reads the screenshot to verify each step and to read the assigned number.
 
 ## Input contract
 ```
@@ -76,28 +76,36 @@ Fields (small targets — set each, then verify the displayed value):
 - Click the **value box** (e.g. `(1120,565)` for MOT, `(1130,577)` for Class) — clicking the
   tiny ▼ arrow does NOT open the popup.
 - **With a popup open, Ctrl+V and most keys are EATEN by the popup** (Tab still moves focus,
-  which masks the failure — fields end up EMPTY). Do not paste into popup fields.
-- The MOT **type** field is a pop-up menu: arrow keys + return work. The Class/Status/Tester
-  fields are drop-down lists: down+return does NOT commit.
-- **THE RELIABLE METHOD — native-res measure-then-click:** open the popup, then
-  `prlctl capture Win11Manual --file x.png` (native 3616×2516; scale = width/1200 vs image
-  coords), `sips --cropOffset <y> <x> -c <h> <w>` to crop the popup region, read the crop,
-  measure the target row's centre, convert native→image (÷3.013), click it. Verified: selected
-  TYPE A - RETAIL and Pass first try. Row pitch is only ~5.6px in image space — eyeballed
-  clicks WILL miss.
+  which masks the failure — fields end up EMPTY). Do not paste into popup fields. Arrow-keys +
+  return DO NOT reliably commit either (tried and failed twice, 2026-07-06) — click the option.
+- **USE THE `select_dropdown` TOOL — not separate click calls.** Root-caused 2026-07-06: a
+  bare click(open) → click(option) → click(next field) sequence has a race — if the popup
+  hasn't visually closed yet, the "next field" click lands inside the still-open popup instead,
+  silently changing the wrong value. `select_dropdown(anchorX, anchorY, optionX, optionY)` does
+  open+select+a 900ms settle as ONE call, so the popup is guaranteed closed before your next
+  action. This is not optional politeness — it was the actual cause of a wrong MOT Class value
+  making it into a gate-passing invoice on the first 2026-07-06 attempt.
+- **Calibrated option coordinates (image-space)** — skip the capture-crop-measure discovery
+  cycle for these, they're measured and CONFIRMED by a real click unless marked otherwise:
+  - MOT type anchor `(1120,565)`: **Full `(1115,570)`** CONFIRMED. Retest `(1115,576)`,
+    Duplicate `(1115,581)` — extrapolated from the ~5.6px row pitch, NOT yet click-tested;
+    verify the first time.
+  - MOT Class anchor `(1130,577)`: **TYPE A - RETAIL `(1128,575)`** CONFIRMED (also confirmed
+    via the Totals MOT fee → £45.00). TYPE A - TRADE `(1128,581)`, TYPE B - RETAIL `(1128,586)`,
+    TYPE B - TRADE `(1128,592)`, TYPE C - RETAIL `(1128,597)`, TYPE C - TRADE `(1128,603)` —
+    extrapolated, not yet click-tested.
+  - MOT Status anchor `(1130,590)`: **Pass `(1116,587)`** CONFIRMED. Pass Retest `(1116,593)`,
+    Fail `(1116,598)`, Fail Retest `(1116,604)` — extrapolated, not yet click-tested.
+  - MOT Tester anchor `(1130,603)`: not yet opened/clicked in any run (GA4 has been carrying
+    over a prior default — "DB | Dec" — every time). Options confirmed live: Dec Buckley /
+    Doug Brittain / Eli Rutstein / Kevin Peach. Coordinates unknown — run the capture-crop
+    discovery once, then add the confirmed coordinate here.
+  - If any extrapolated coordinate misses (lands on the row above/below), re-measure via
+    native capture (see Speed section) rather than nudging blindly — get it right once, add
+    it here as CONFIRMED, don't leave the guess in place.
 - Committed values display TRUNCATED in the narrow boxes ("TYPE A - ", "DB | Dec") — verify
   via a side-effect where possible (Class → the Totals **MOT fee** populates; TYPE A - RETAIL
   = **£45.00** at ELI) rather than re-opening the field.
-- Screenshots can show a **stale popup overlay** after selection — press `escape`, click a
-  neutral spot, then re-screenshot to read the committed value before judging success.
-
-**Confirmed option lists (live, 2026-07-06)** — count arrow-presses to these, no need to
-re-run the capture-crop-measure discovery process:
-- MOT type: **None / Full / Retest / Duplicate**
-- MOT Class: **TYPE A - RETAIL / TYPE A - TRADE / TYPE B - RETAIL / TYPE B - TRADE /
-  TYPE C - RETAIL / TYPE C - TRADE**
-- MOT Status: **Pass / Pass Retest / Fail / Fail Retest**
-- MOT Tester: **Dec Buckley / Doug Brittain / Eli Rutstein / Kevin Peach**
 For exactness: set MOT type + Class(pricing tier) + Status + Tester + fee to match the web
 app's MOT, and confirm the Totals **MOT** line equals the web app's MOT amount.
 
@@ -127,6 +135,10 @@ flag for a human (an unissued draft is harmless; a wrong issued invoice is not).
    and paste `jobDescription` verbatim. This tab was found EMPTY on a real live invoice
    (90707) — treat as optional, only fill when the web app actually has a job-description
    field to carry over; don't invent content.
+   **Known GA4-side transform (2026-07-06):** GA4 auto-Title-Cased a pasted sentence
+   ("Diagnostic check and oil filter..." became "Diagnostic Check And Oil Filter...") on
+   display. That's GA4 reformatting the field, not a paste failure — don't treat a case
+   change alone as a mismatch when verifying this field.
 5. **Labour lines** — click **Labour** tab `(191,254)`. For each labour item, on the empty
    ("Job Lookup") row:
    - Description cell `(200,294)` → type description
@@ -148,10 +160,14 @@ flag for a human (an unissued draft is harmless; a wrong issued invoice is not).
 9. **Return the number** — read `n` from the header; write it to the web record as `ga4Number`.
 
 ## Abort / cleanup
-- Abort before Issue = leftover unissued draft `n`. Delete it: Delete ▾ `(1003,68)` →
-  Delete Doc `(1001,108)` (may need a SECOND click — first can just highlight the menu item)
-  → confirm "Delete Record?" `(611,430)` → confirm "Delete Marked Line Items" `(622,435)`.
-  Verify it's gone from Invoices In Progress (record count drops).
+- Abort before Issue = leftover unissued draft `n`. Delete it: **use `click_menu_button`** on
+  Delete ▾ `(1003,68)` (this FileMaker menu button intermittently ignores a single click —
+  observed twice, same coordinates, no state change between attempts — `click_menu_button`
+  always sends two) → Delete Doc `(1001,108)` → confirm "Delete Record?" `(611,430)` → confirm
+  "Delete Marked Line Items" `(622,435)`. Verify it's gone from Invoices In Progress (record
+  count drops). If the record already navigated away and isn't visible, **Quick Search the doc
+  number** (click the search field top-left, paste the number, Enter) rather than scrolling —
+  found it instantly when scrolling didn't.
 - GA4 assigns next = max(all docs)+1; deleting the highest draft frees that number.
 
 ## Hard rules
