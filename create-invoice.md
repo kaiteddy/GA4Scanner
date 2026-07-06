@@ -1,5 +1,11 @@
 # create_invoice — register a web invoice into GA4, return the authoritative number
 
+> **E2E TEST PASSED 2026-07-06** on the hardened server (draft 90706, LD10 VCZ): VRM lookup +
+> AccNo verify, all four MOT Extras set, mileage, labour line (paste), parts line (paste),
+> **totals gate matched to the penny (60.00 net / 12.00 VAT / 45.00 MOT / 117.00 total)**,
+> held at Issue, draft deleted + verified gone. Every step below is now live-verified except
+> the final Issue click (needs a real invoice + user go-ahead).
+
 Purpose: given a completed invoice from the web app (garagemanagerpro), create it in GA4
 **itemised and exact**, verify GA4's computed total matches, **Issue** it, and return the
 GA4 invoice number so the web app prints the aligned number. Replaces the docNoClearance
@@ -69,13 +75,28 @@ Fields (small targets — set each, then verify the displayed value):
 - **MOT Tester** dropdown — tester name. DB stores staff GUIDs (6 distinct in
   `Documents.staffMOTTester`); names must be enumerated from the live dropdown.
 
-**Extras-dropdown interaction (LEARNED 2026-07-03, hardened server):**
+**Extras-dropdown interaction (E2E-VERIFIED 2026-07-06):**
 - Click the **value box** (e.g. `(1120,565)` for MOT, `(1130,577)` for Class) — clicking the
   tiny ▼ arrow does NOT open the popup.
-- The popup rows are ~6–7px tall in image space — **do not click rows**. With the popup open,
-  use **arrow keys + return** (verified: up ×1 + return moved Retest→Full correctly).
+- **With a popup open, Ctrl+V and most keys are EATEN by the popup** (Tab still moves focus,
+  which masks the failure — fields end up EMPTY). Do not paste into popup fields.
+- The MOT **type** field is a pop-up menu: arrow keys + return work. The Class/Status/Tester
+  fields are drop-down lists: down+return does NOT commit.
+- **THE RELIABLE METHOD — native-res measure-then-click:** open the popup, then
+  `prlctl capture Win11Manual --file x.png` (native 3616×2516; scale = width/1200 vs image
+  coords), `sips --cropOffset <y> <x> -c <h> <w>` to crop the popup region, read the crop,
+  measure the target row's centre, convert native→image (÷3.013), click it. Verified: selected
+  TYPE A - RETAIL and Pass first try. Row pitch is only ~5.6px in image space — eyeballed
+  clicks WILL miss.
+- Committed values display TRUNCATED in the narrow boxes ("TYPE A - ", "DB | Dec") — verify
+  via a side-effect where possible (Class → the Totals **MOT fee** populates; TYPE A - RETAIL
+  = **£45.00** at ELI) rather than re-opening the field.
 - Screenshots can show a **stale popup overlay** after selection — press `escape`, click a
   neutral spot, then re-screenshot to read the committed value before judging success.
+
+**Confirmed option lists (live, 2026-07-06):**
+- MOT Status: **Pass / Pass Retest / Fail / Fail Retest**
+- MOT Tester: **DB | Dec Buckley, DB | Doug Brittain, ER | Eli Rutstein, KP | Kevin Peach**
 For exactness: set MOT type + Class(pricing tier) + Status + Tester + fee to match the web
 app's MOT, and confirm the Totals **MOT** line equals the web app's MOT amount. Still to
 enumerate on the fixed server: exact Status and Tester option lists.
@@ -106,8 +127,12 @@ flag for a human (an unissued draft is harmless; a wrong issued invoice is not).
    - Unit Price cell `(~877,294)` → type unitPrice
    - click off the row `(400,450)` to commit → verify SubTotal == qty×unitPrice and a new blank row appeared
    - (next row is one row lower each iteration — re-screenshot to get the current empty-row Y)
-6. **Parts lines** — click **Parts** tab `(264,254)`; same per-row pattern (Parts portal is
-   analogous; confirm its columns on first run).
+6. **Parts lines** — click **Parts** tab `(264,254)`. Columns CONFIRMED (2026-07-06):
+   **Part Number ("Part Lookup" ghost, magnifier) | Description | Cost | Qty | Unit Price |
+   D% | VAT | SubTotal**. Free-text parts work with Part Number left EMPTY (Cost column then
+   shows a red ✗ = no cost recorded — harmless). Cell coords on the first empty row:
+   Description `(186,299)`, Qty `(858,299)`, Unit Price `(900,299)` (shifted vs Labour by the
+   extra columns). Same enter-verify-commit pattern as Labour; click off at `(500,420)`.
 7. **THE GATE** — read the Totals panel (right side): verify
    `SubTotal==expectedNet`, `VAT==expectedVat`, `Total==expectedTotal` to the penny.
    **Any mismatch → ABORT, do NOT Issue.** (A mismatch means a line was mis-entered — the
@@ -117,8 +142,9 @@ flag for a human (an unissued draft is harmless; a wrong issued invoice is not).
 
 ## Abort / cleanup
 - Abort before Issue = leftover unissued draft `n`. Delete it: Delete ▾ `(1003,68)` →
-  Delete Doc `(1001,108)` → confirm "Delete Record?" `(611,430)` → confirm "Delete Marked
-  Line Items" `(622,435)`. Verify it's gone from Invoices In Progress.
+  Delete Doc `(1001,108)` (may need a SECOND click — first can just highlight the menu item)
+  → confirm "Delete Record?" `(611,430)` → confirm "Delete Marked Line Items" `(622,435)`.
+  Verify it's gone from Invoices In Progress (record count drops).
 - GA4 assigns next = max(all docs)+1; deleting the highest draft frees that number.
 
 ## Hard rules
