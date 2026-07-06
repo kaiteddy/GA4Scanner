@@ -20,6 +20,7 @@ import { waitTool, waitMs } from "./tools/wait.js";
 import { focusWindowTool, focusWindow } from "./tools/focus.js";
 import { pasteFieldTool, pasteField } from "./tools/paste.js";
 import { selectDropdownTool, selectDropdown, clickMenuButtonTool, clickMenuButton } from "./tools/dropdown.js";
+import { fillInvoiceTool, fillInvoice, issueInvoiceTool, issueInvoice } from "./tools/invoice.js";
 
 const server = new Server(
   { name: "garage-assistant-mcp", version: "1.0.0" },
@@ -40,6 +41,8 @@ const ALL_TOOLS = [
   pasteFieldTool,
   selectDropdownTool,
   clickMenuButtonTool,
+  fillInvoiceTool,
+  issueInvoiceTool,
 ];
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -77,6 +80,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return await selectDropdown(args as any);
       case "click_menu_button":
         return await clickMenuButton(args as any);
+      case "fill_invoice":
+        return await fillInvoice(args as any);
+      case "issue_invoice":
+        return await issueInvoice();
       default:
         return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
     }

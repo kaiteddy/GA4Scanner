@@ -111,6 +111,21 @@ app's MOT, and confirm the Totals **MOT** line equals the web app's MOT amount.
 
 ## Idempotency (do FIRST, before touching GA4)
 - If the web record already has a `ga4Number`, **ABORT — already registered.** Never create twice.
+- The **`ga4Number` column now EXISTS** on `serviceHistory` (garagemanagerpro Neon, added 2026-07-06,
+  `varchar`, nullable). This is the reconciliation key — GA4 issues the number, we stamp it here.
+
+## Recording the number back (step 9) — use `ga4Number`, NOT a `docNo` overwrite
+GA4 is the single source of truth for the number; the web app must match it. Record it by setting
+`serviceHistory.ga4Number` on the web record — **do NOT overwrite `docNo`.** Web-created invoices
+(`externalId LIKE 'WEB-%'`) carry guess-ahead `docNo`s that are denser and higher than GA4's real
+numbers, so overwriting `docNo` to GA4's number **cascades**: e.g. 2026-07-06, Knoller web 90732 →
+GA4 90708, but web 90708 was already Charles Hammond's belt job, whose GA4 number 90709 was already
+another web invoice (Lustigman), etc. ~20 web-created invoices (docNo 90684–90735) sit in this state.
+One-at-a-time docNo alignment is impossible; only a coordinated batch-migration (with a temp offset)
+could align docNos, and it re-collides whenever a new web invoice is created. So: **stamp `ga4Number`,
+leave `docNo`.** For the web app to *display/print* the matching number, its invoice-number logic must
+prefer `ga4Number` when present (webapp code change, tracked separately). See [[web-ga4-doc-numbering]]
+and [[ga4-number-reconciliation]].
 
 ## Step sequence
 Each step: perform the action, then **screenshot and verify the expected state before
@@ -218,6 +233,32 @@ per field.
   wrong total).
 - Prefer one longer wait over several short ones only where FileMaker is actually slow
   (tab switches, VRM Lookup, New Invoice); a plain field commit doesn't need it.
+
+**4. Real-run learnings (2026-07-06, two live Issues: 90708 Knoller, 90709 Hammond belt).**
+The per-click path is fast (~220ms warm); wall-clock was lost to avoidable friction. Fixes:
+- **Registration field: ALWAYS `paste_field`, NEVER `type_text`.** Scancode typing intermittently
+  drops a char in this combo field ("LP15 VZF"→"LP1 VZF", "BJ15 YTU"→"J15 YU"), forcing clear+retry
+  (cost ~6 min on one reg). `paste_field` is deterministic here. (The field also eats Ctrl+V on the
+  FIRST attempt sometimes — if the pasted value doesn't stick, clear via the field's `X` and paste again.)
+- **Screenshot only at checkpoints, not after every field.** Enter a whole portal row
+  (desc+qty+price) then ONE screenshot to verify the committed row + new blank row. Verify after:
+  VRM Lookup, each committed line, each Extras dropdown, and the gate. This is the single biggest
+  time saver.
+- **Watch the Qty cell on portal rows** — it silently doesn't take sometimes (SubTotal stays 0.00);
+  re-paste Qty and re-commit. The row SubTotal is the immediate tell.
+- **Description tab is a rich-text field that fights automation:** Ctrl+A and Ctrl+V are eaten
+  (Ctrl+V leaks a literal "v"); `paste_field` DOES work (retry once if it leaks); to clear use the
+  **Edit menu → Select All** then Delete (keyboard select-all fails); menu **Edit → Paste** is the
+  reliable fallback (needs the text on the clipboard first — `paste_field` sets it as a side effect).
+  GA4 auto-Title-Cases the committed text — expected, not a failure.
+- **Sundries/Lubricants/Paint & Mat.** map to the **Extras panel** (under MOT), NOT a Parts line —
+  see [[ga4-sundries-placement]]. (On 90708 I used a Parts line and it still tied to the penny; Adam
+  wants Extras going forward.)
+- **The Issue dialog** offers Close / Issue & Print / Issue & Email / Issue Print & Email / **Issue Only**.
+  Use **Issue Only** for a plain write-back (no print/email/payment — those are outward-facing).
+- **Direct GA4 data-layer writes are NOT viable** (Standalone FileMaker runtime: no Data API/ODBC;
+  binary file; and it would bypass GA4's number-assignment + calc logic, which must stay authoritative).
+  UI automation is the correct write path. Direct/binary access is read-only (verification only).
 
 ## Coordinates
 Image-space (1200-wide screenshot); the server maps them to the live window. They are stable
