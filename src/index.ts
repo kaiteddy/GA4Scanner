@@ -18,6 +18,7 @@ import { scroll, scrollTool } from "./tools/scroll.js";
 import { getWindowInfo, getWindowInfoTool } from "./tools/window.js";
 import { waitTool, waitMs } from "./tools/wait.js";
 import { focusWindowTool, focusWindow } from "./tools/focus.js";
+import { pasteFieldTool, pasteField } from "./tools/paste.js";
 
 const server = new Server(
   { name: "garage-assistant-mcp", version: "1.0.0" },
@@ -35,6 +36,7 @@ const ALL_TOOLS = [
   getWindowInfoTool,
   waitTool,
   focusWindowTool,
+  pasteFieldTool,
 ];
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -66,6 +68,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return await waitMs(args as any);
       case "focus_window":
         return await focusWindow();
+      case "paste_field":
+        return await pasteField(args as any);
       default:
         return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
     }

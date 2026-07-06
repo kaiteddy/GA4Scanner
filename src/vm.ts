@@ -46,6 +46,18 @@ export async function vmExecCommand(command: string): Promise<string> {
   ]);
 }
 
+/**
+ * Set the VM's clipboard (shared with the interactive GA4 session — unlike
+ * keystrokes sent via `prlctl exec`, which are session-isolated). This is the
+ * deterministic path for exact text entry: paste can't scramble characters
+ * the way per-key scancode typing can. Single quotes are doubled for
+ * PowerShell's single-quoted string escaping.
+ */
+export async function vmSetClipboard(text: string): Promise<void> {
+  const escaped = text.replace(/'/g, "''");
+  await vmExecCommand(`Set-Clipboard -Value '${escaped}'`);
+}
+
 /** Send a key scancode to the VM's virtual keyboard */
 export async function vmSendKey(scancode: number): Promise<void> {
   await exec("prlctl", [

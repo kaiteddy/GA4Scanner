@@ -34,14 +34,34 @@ export interface WindowInfo {
  * framebuffer), but clicks/keystrokes land on the lock screen — silently doing
  * nothing to GA4. Detect the lock up front so tools fail with an actionable
  * message instead of an AppleScript "Invalid index" error.
+ *
+ * PERF: this spawns python3 (~100ms). A full invoice entry fires 40-60 clicks/
+ * keystrokes, and this used to run TWICE per click (once here, once inside
+ * activateParallels) — ~200ms of pure lock-polling per action, ~10s+ per
+ * invoice for a fact that changes maybe once a session. Cache it briefly:
+ * still catches a mid-session lock within LOCK_CACHE_MS, but stops re-asking
+ * six times a second.
  */
+const LOCK_CACHE_MS = 3000;
+let lockCache: { locked: boolean; at: number } | null = null;
+
 export async function assertScreenUnlocked(): Promise<void> {
+  if (lockCache && Date.now() - lockCache.at < LOCK_CACHE_MS) {
+    if (lockCache.locked) {
+      throw new Error(
+        "Mac screen is LOCKED — clicks and keystrokes cannot reach GA4 (screenshots still work). " +
+          "Ask the user to unlock the Mac, then retry."
+      );
+    }
+    return;
+  }
   try {
     const locked = await exec("python3", [
       "-c",
       "import Quartz; d = Quartz.CGSessionCopyCurrentDictionary(); print(bool(d and d.get('CGSSessionScreenIsLocked')))",
     ]);
-    if (locked === "True") {
+    lockCache = { locked: locked === "True", at: Date.now() };
+    if (lockCache.locked) {
       throw new Error(
         "Mac screen is LOCKED — clicks and keystrokes cannot reach GA4 (screenshots still work). " +
           "Ask the user to unlock the Mac, then retry."
@@ -49,12 +69,26 @@ export async function assertScreenUnlocked(): Promise<void> {
     }
   } catch (e) {
     if (e instanceof Error && e.message.startsWith("Mac screen is LOCKED")) throw e;
-    // Lock probe itself failed (no python3?) — don't block on it.
+    // Lock probe itself failed (no python3?) — don't block on it, don't cache the failure.
   }
 }
 
+/**
+ * PERF: the Parallels window essentially never moves mid-session (it's a
+ * fixed console window), but every click was re-querying its position via a
+ * fresh AppleScript call (~150-200ms). Cache it; a 30s TTL means at most one
+ * extra lookup per half-minute of active work. If the window genuinely moves
+ * (user drags it), the next click may be briefly off — call with
+ * forceRefresh=true (or wait out the TTL) to recover.
+ */
+const WINDOW_CACHE_MS = 30000;
+let windowCache: { info: WindowInfo; at: number } | null = null;
+
 /** Get the Parallels VM window position and size */
-export async function getParallelsWindow(): Promise<WindowInfo> {
+export async function getParallelsWindow(forceRefresh = false): Promise<WindowInfo> {
+  if (!forceRefresh && windowCache && Date.now() - windowCache.at < WINDOW_CACHE_MS) {
+    return windowCache.info;
+  }
   await assertScreenUnlocked();
   const script = `
 tell application "System Events"
@@ -69,6 +103,7 @@ end tell`;
   try {
     result = await osascript(script);
   } catch (e) {
+    windowCache = null;
     throw new Error(
       "Parallels VM console window not found on the Mac (VM may be running headless after " +
         'its window was closed). Reopen it: Parallels menu bar → Window → "Win11Manual". ' +
@@ -76,13 +111,15 @@ end tell`;
     );
   }
   const parts = result.split(",").map((s) => s.trim());
-  return {
+  const info: WindowInfo = {
     x: parseInt(parts[0], 10),
     y: parseInt(parts[1], 10),
     width: parseInt(parts[2], 10),
     height: parseInt(parts[3], 10),
     name: parts.slice(4).join(","),
   };
+  windowCache = { info, at: Date.now() };
+  return info;
 }
 
 /**
@@ -122,20 +159,31 @@ export async function toAbsoluteCoords(
  * lands there instead of GA4. Keystroke injection likewise needs the VM window
  * active. This was the root cause of "flaky" clicks and lost keystrokes.
  */
+const FRONTMOST_QUERY =
+  "tell application \"System Events\" to get name of first process whose frontmost is true";
+
 export async function activateParallels(): Promise<void> {
   await assertScreenUnlocked();
-  // Retry until Parallels is confirmed frontmost. Some machines have apps
-  // (Mail/Safari notifications) that aggressively re-grab focus, so a single
-  // activate + fixed sleep isn't enough — we verify and retry.
+  // PERF fast path: within one invoice entry, Parallels is almost always
+  // already frontmost from the previous action — the old code always paid
+  // set-frontmost + sleep(200) + verify (~500ms) even then. One cheap check
+  // first turns the common case into a single ~150ms osascript call.
+  try {
+    const front = await osascript(FRONTMOST_QUERY);
+    if (front.trim() === "prl_client_app") return;
+  } catch {
+    // fall through to the slow retry path below
+  }
+  // Slow path: retry until Parallels is confirmed frontmost. Some machines
+  // have apps (Mail/Safari notifications) that aggressively re-grab focus,
+  // so a single activate + fixed sleep isn't enough — verify and retry.
   for (let attempt = 0; attempt < 6; attempt++) {
     try {
       await osascript(
         'tell application "System Events" to set frontmost of (first process whose name is "prl_client_app") to true'
       );
       await new Promise((r) => setTimeout(r, 200));
-      const front = await osascript(
-        "tell application \"System Events\" to get name of first process whose frontmost is true"
-      );
+      const front = await osascript(FRONTMOST_QUERY);
       if (front.trim() === "prl_client_app") return;
     } catch {
       // System Events hiccup — retry

@@ -59,6 +59,10 @@ export async function typeText(args: { text: string }) {
 }
 
 export async function pressKey(args: { key: string; repeat?: number }) {
+  // NB: previously missing — key injection went to whatever the OS thought
+  // was frontmost, relying on a preceding click to have activated Parallels.
+  // Cheap now (cached fast path), so make press_key correct on its own.
+  await activateParallels();
   const count = args.repeat || 1;
   const parts = args.key.split("+").map((p) => p.trim().toLowerCase());
 

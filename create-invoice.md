@@ -11,9 +11,10 @@ Purpose: given a completed invoice from the web app (garagemanagerpro), create i
 GA4 invoice number so the web app prints the aligned number. Replaces the docNoClearance
 guess-ahead scheme — GA4 becomes the single source of truth for the number.
 
-Runs as an agent procedure over the `garage-assistant` MCP tools (screenshot + click +
-type + press_key), on the HARDENED server (activate-verify-retry per click). The agent
-reads the screenshot to verify each step and to read the assigned number.
+Runs as an agent procedure over the `garage-assistant` MCP tools (screenshot, click,
+paste_field, press_key), on the hardened + speed-optimized server (cached activation,
+consolidated paste). The agent reads the screenshot to verify each step and to read the
+assigned number.
 
 ## Input contract
 ```
@@ -22,6 +23,9 @@ reads the screenshot to verify each step and to read the assigned number.
   reg: string,                 // vehicle registration — drives VRM Lookup (vehicle + customer)
   customerAccNo: string,       // expected GA4 account no, to verify VRM Lookup pulled the right customer
   mileage: number,
+  jobDescription?: string,     // free-text "work performed" summary — goes in the Description
+                                // tab, NOT a labour/parts line (see step 4b). Optional: many
+                                // real invoices leave it blank and rely on itemised lines alone.
   labour: [{ description, qty, unitPrice, vatCode? }],   // vatCode default T1 (20%)
   parts:  [{ description, qty, unitPrice, vatCode? }],
   expectedNet: number,         // from web app — the correctness gate
@@ -37,18 +41,11 @@ written in the web app. **A matching total is NOT sufficient** (the same £ tota
 wrong description). The web-app invoice is the single source of truth; GA4 must be made to
 match it, character-for-character.
 
-**Exact text entry — CONFIRMED MECHANISM (use this for every text/number field):**
-**clipboard-paste**, not char-by-char typing.
-1. Set the VM clipboard to the exact source string:
-   `prlctl exec Win11Manual --current-user powershell -Command "Set-Clipboard -Value '<exact>'"`
-2. Focus the target field (click it).
-3. Paste with **Ctrl+V via send-key-event** (scancodes 29+47) — NOT via `prlctl exec`
-   keystrokes (those don't reach interactive GA4). The exec-set clipboard IS shared with the
-   interactive session, so this pastes the exact string.
-   VERIFIED 2026-07-03: pasted "PASTED_OK" into a live field intact.
-This is **deterministic** — it reproduces any characters (`& + ( ) : " '`) exactly and
-CANNOT scramble (unlike scancode typing, which put a Qty digit in the Description cell during
-the supervised run). This is what makes field-level exactness achievable.
+**Exact text entry — use the `paste_field` tool** (clipboard-set + click + select-all + paste
+in one call — see Speed section below for why this replaced the old 4-step manual sequence).
+This is **deterministic** — it reproduces any characters (`& + ( ) : " '`) exactly and CANNOT
+scramble (unlike scancode typing, which put a Qty digit in the Description cell during the
+first supervised run). This is what makes field-level exactness achievable.
 
 **Per-field verification — after each field:**
 - Primary: because paste is deterministic, verify the field is **populated and visually
@@ -94,12 +91,15 @@ Fields (small targets — set each, then verify the displayed value):
 - Screenshots can show a **stale popup overlay** after selection — press `escape`, click a
   neutral spot, then re-screenshot to read the committed value before judging success.
 
-**Confirmed option lists (live, 2026-07-06):**
+**Confirmed option lists (live, 2026-07-06)** — count arrow-presses to these, no need to
+re-run the capture-crop-measure discovery process:
+- MOT type: **None / Full / Retest / Duplicate**
+- MOT Class: **TYPE A - RETAIL / TYPE A - TRADE / TYPE B - RETAIL / TYPE B - TRADE /
+  TYPE C - RETAIL / TYPE C - TRADE**
 - MOT Status: **Pass / Pass Retest / Fail / Fail Retest**
-- MOT Tester: **DB | Dec Buckley, DB | Doug Brittain, ER | Eli Rutstein, KP | Kevin Peach**
+- MOT Tester: **Dec Buckley / Doug Brittain / Eli Rutstein / Kevin Peach**
 For exactness: set MOT type + Class(pricing tier) + Status + Tester + fee to match the web
-app's MOT, and confirm the Totals **MOT** line equals the web app's MOT amount. Still to
-enumerate on the fixed server: exact Status and Tester option lists.
+app's MOT, and confirm the Totals **MOT** line equals the web app's MOT amount.
 
 ## Idempotency (do FIRST, before touching GA4)
 - If the web record already has a `ga4Number`, **ABORT — already registered.** Never create twice.
@@ -120,6 +120,13 @@ flag for a human (an unissued draft is harmless; a wrong issued invoice is not).
    - Verify the vehicle block filled (Make/Model non-empty) AND the customer block filled.
    - **Verify `Acc Number` == `customerAccNo`.** Mismatch → ABORT (wrong vehicle/owner).
 4. **Mileage** — click Mileage field `(119,199)`, type `mileage`.
+4b. **Job Description (MAPPED 2026-07-06, if `jobDescription` given)** — click **Description**
+   tab `(118,254)`: a free-text box (not a labour/parts line, no price/VAT) with a "Pre-set
+   descriptions" dropdown above it and a footer note ("~35 lines will print; for more use
+   zero-qty/priced labour lines, Shift+Enter for a new line"). Click the text box (~(520,400))
+   and paste `jobDescription` verbatim. This tab was found EMPTY on a real live invoice
+   (90707) — treat as optional, only fill when the web app actually has a job-description
+   field to carry over; don't invent content.
 5. **Labour lines** — click **Labour** tab `(191,254)`. For each labour item, on the empty
    ("Job Lookup") row:
    - Description cell `(200,294)` → type description
@@ -163,6 +170,38 @@ flag for a human (an unissued draft is harmless; a wrong issued invoice is not).
   → stop and ask the user to unlock; do not retry blind.
 - **Parallels console window must be open on the Mac** (VM can run headless after the window
   is closed). If unlocked but windowless: Parallels menu bar → Window → "Win11Manual".
+
+## Speed (why the first run was slow, and what changed)
+
+The 2026-07-06 dry run took several minutes for one invoice. Two separate costs, both fixed:
+
+**1. Per-click overhead was ~700ms, paid by EVERY click/keystroke.** Each one re-derived the
+Parallels window position via a fresh AppleScript call AND re-ran the full activate-verify
+dance (set frontmost → sleep 200ms → verify) even when Parallels was already frontmost from
+the previous action a second earlier. Measured: 714ms/click. **Fixed in the server
+(2026-07-06 build):** window geometry is now cached 30s; the screen-lock check is cached 3s;
+`activateParallels` fast-paths to a single ~150ms check-only call when already frontmost,
+only falling into the slow retry loop when something actually stole focus. Measured after the
+fix: ~220ms/click warm (3.2× faster). Needs a fresh session to load (servers don't hot-reload
+— see [[ga4-write-path-status]]).
+
+**2. A NEW `paste_field(x, y, text, selectAll?)` tool replaces the 4-call sequence** (Bash
+clipboard-set → click → ctrl+a → ctrl+v) with one MCP call that does clipboard-set + click +
+select-all + paste server-side. Use this for every exact-text field instead of the old
+manual sequence — it's both fewer round-trips and avoids re-paying activation 3 extra times
+per field.
+
+**3. Operational guidance — don't re-verify what's already proven:**
+- The expensive native-capture-crop-measure dropdown technique is for **discovering** an
+  option list the first time. Once a list is confirmed (Status/Tester/Class are now all
+  documented above), just count arrow-presses to the known option — no capture-crop-measure
+  round trip needed each time.
+- Don't screenshot after every single keystroke. Verify at natural checkpoints (end of a
+  row, after a tab switch, before the totals gate) — the gate itself is the strongest
+  correctness check and covers most silent failures (a scrambled/skipped field shows up as a
+  wrong total).
+- Prefer one longer wait over several short ones only where FileMaker is actually slow
+  (tab switches, VRM Lookup, New Invoice); a plain field commit doesn't need it.
 
 ## Coordinates
 Image-space (1200-wide screenshot); the server maps them to the live window. They are stable
