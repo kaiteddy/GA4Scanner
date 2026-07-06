@@ -38,6 +38,18 @@ async function pasteInto(x: number, y: number, text: string, selectAll = true): 
   await pasteField({ x, y, text, selectAll });
 }
 
+// GA4 intermittently EATS the first Ctrl+V in a freshly-focused field — observed live on
+// the registration combo field (→ VRM Lookup runs on empty → no customer attaches) and on
+// portal description cells (→ blank line description, invisible to the totals gate). The fix
+// is a double-paste: paste, settle, paste again. pasteField does select-all→paste, so when the
+// first paste already landed the second is idempotent; when it was eaten, the second lands.
+// This is what makes fill_invoice reliable enough to run unattended.
+async function pasteSticky(x: number, y: number, text: string, selectAll = true): Promise<void> {
+  await pasteField({ x, y, text, selectAll });
+  await sleep(150);
+  await pasteField({ x, y, text, selectAll });
+}
+
 // --- Calibrated image-space coordinates (confirmed on 2026-07-06 live runs) ---
 const C = {
   invoicesNav: [263, 50],
@@ -64,6 +76,11 @@ const C = {
   motAnchor: [1105, 709],
   motClassAnchor: [1120, 725],
   motStatusAnchor: [1120, 741],
+  // Customer Database picker (opened by the magnifier beside Acc Number). Coords confirmed
+  // live 2026-07-06 attaching Bruck (BRU003) to a new-vehicle invoice (SF65 XDA).
+  accMagnifier: [912, 113],
+  custSearchField: [460, 359],
+  custFirstRowPlus: [760, 409],
 } as const;
 
 // Only options confirmed by a real click on 2026-07-06 are baked in. Others need
@@ -95,10 +112,12 @@ export const fillInvoiceTool = {
     "MUST verify from the returned screenshot that (1) the customer Acc No is correct and " +
     "(2) the Totals panel matches the web total to the penny, THEN call issue_invoice. This " +
     "collapses ~30 field-by-field round-trips into one server-side sequence. Assumes GA4 is " +
-    "open and the screen unlocked. Registration and every text/number field are pasted " +
-    "(deterministic — never scrambles). MOT currently supports only the confirmed ELI option " +
-    "set (type Full, class 'TYPE A - RETAIL', status Pass); other options error out until " +
-    "their popup coordinates are calibrated.",
+    "open and the screen unlocked. Registration and every text/number field are DOUBLE-pasted " +
+    "(deterministic — never scrambles, and defeats GA4's intermittent first-Ctrl+V-eaten bug). " +
+    "If the vehicle is new to GA4, VRM Lookup pulls the vehicle but leaves the customer blank " +
+    "(Acc No 'Auto Generate') — call attach_customer(surname) after, then verify. MOT currently " +
+    "supports only the confirmed ELI option set (type Full, class 'TYPE A - RETAIL', status " +
+    "Pass); other options error out until their popup coordinates are calibrated.",
   inputSchema: {
     type: "object" as const,
     properties: {
@@ -168,8 +187,9 @@ export async function fillInvoice(p: FillInvoicePayload) {
   await clickImg(...C.invoicesNav); await sleep(1500);
   await clickImg(...C.newInvoice); await sleep(2000);
 
-  // 2. Registration (paste — typing scrambles this combo field)
-  await pasteInto(...C.regField, p.reg);
+  // 2. Registration (double-paste — typing scrambles this combo field AND its first
+  //    Ctrl+V is often eaten, which would leave VRM Lookup with nothing to look up)
+  await pasteSticky(...C.regField, p.reg);
   await sleep(300);
 
   // 3. VRM Lookup (fills vehicle + customer)
@@ -189,9 +209,9 @@ export async function fillInvoice(p: FillInvoicePayload) {
     await clickImg(...C.tabLabour); await sleep(900);
     let y = C.rowY0;
     for (const l of p.labour) {
-      await pasteInto(C.labourDesc, y, l.description);
-      await pasteInto(C.labourQty, y, l.qty);
-      await pasteInto(C.labourPrice, y, l.unitPrice);
+      await pasteSticky(C.labourDesc, y, l.description);
+      await pasteSticky(C.labourQty, y, l.qty);
+      await pasteSticky(C.labourPrice, y, l.unitPrice);
       await clickImg(...C.commitOff); await sleep(500);
       y += C.rowStep;
     }
@@ -202,9 +222,9 @@ export async function fillInvoice(p: FillInvoicePayload) {
     await clickImg(...C.tabParts); await sleep(900);
     let y = C.rowY0;
     for (const pt of p.parts) {
-      await pasteInto(C.partsDesc, y, pt.description);
-      await pasteInto(C.partsQty, y, pt.qty);
-      await pasteInto(C.partsPrice, y, pt.unitPrice);
+      await pasteSticky(C.partsDesc, y, pt.description);
+      await pasteSticky(C.partsQty, y, pt.qty);
+      await pasteSticky(C.partsPrice, y, pt.unitPrice);
       await clickImg(...C.commitOff); await sleep(500);
       y += C.rowStep;
     }
@@ -224,7 +244,7 @@ export async function fillInvoice(p: FillInvoicePayload) {
   // 9. Description (optional) — paste works here; GA4 will Title-Case on commit.
   if (p.jobDescription) {
     await clickImg(...C.tabDescription); await sleep(900);
-    await pasteInto(...C.descBox, p.jobDescription);
+    await pasteSticky(...C.descBox, p.jobDescription);
     await sleep(300);
   }
 
@@ -249,5 +269,35 @@ export async function issueInvoice() {
   await assertScreenUnlocked();
   await clickImg(...C.issueBtn); await sleep(1500);   // Issue → opens Issue/Add Payments dialog
   await clickImg(...C.issueOnly); await sleep(1500);  // Issue Only
+  return screenshot();
+}
+
+export const attachCustomerTool = {
+  name: "attach_customer",
+  description:
+    "Attach a customer to the invoice draft currently open in GA4 via the Customer Database " +
+    "picker. Use when VRM Lookup pulled the vehicle but left the customer blank (Acc No shows " +
+    "'Auto Generate') — typically a vehicle new to GA4. Opens the picker beside Acc No, searches " +
+    "the given text, and selects the FIRST match, then returns a screenshot. Search by SURNAME, " +
+    "not the web account number (web account codes are frequently wrong — GA4's own account is " +
+    "authoritative). The caller MUST verify from the screenshot that the right customer attached " +
+    "(name + Acc No) before issuing; if the surname is common and the first match is wrong, " +
+    "re-run with a more specific search term.",
+  inputSchema: {
+    type: "object" as const,
+    properties: {
+      search: { type: "string", description: "Customer search text — a surname, e.g. 'Bruck'" },
+    },
+    required: ["search"],
+  },
+};
+
+export async function attachCustomer(args: { search: string }) {
+  await assertScreenUnlocked();
+  await clickImg(...C.accMagnifier); await sleep(1200);        // open Customer Database picker
+  await pasteSticky(...C.custSearchField, args.search);
+  await sleep(200);
+  await vmSendKey(SCANCODES.enter); await sleep(1200);         // run the search (filters the list)
+  await clickImg(...C.custFirstRowPlus); await sleep(1000);    // "+" on the first match selects it
   return screenshot();
 }
