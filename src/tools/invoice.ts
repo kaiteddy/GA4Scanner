@@ -101,6 +101,11 @@ export interface FillInvoicePayload {
   parts?: InvoiceLine[];
   mot?: InvoiceMot;
   onOpenDoc?: "ignore" | "skip";
+  // "new" (default): create a fresh draft via New Invoice (GA4 assigns the next number).
+  // "current": fill the draft ALREADY OPEN on screen, skipping New Invoice. This is how the
+  // number-pool worker fills a PRE-RESERVED blank draft in place so it keeps its reserved
+  // number — the caller must have navigated to/opened that exact draft first.
+  startFrom?: "new" | "current";
 }
 
 export const fillInvoiceTool = {
@@ -168,6 +173,14 @@ export const fillInvoiceTool = {
           "unrelated stale pending invoice). 'skip' does not click (use if you've confirmed no " +
           "dialog appears).",
       },
+      startFrom: {
+        type: "string",
+        enum: ["new", "current"],
+        description: "'new' (default) creates a fresh draft via New Invoice — GA4 assigns the " +
+          "next number. 'current' fills the draft ALREADY OPEN on screen (skips New Invoice) so " +
+          "it keeps its number — used by the number-pool worker to fill a pre-reserved blank " +
+          "draft in place. With 'current' the caller MUST have opened that exact draft first.",
+      },
     },
     required: ["reg", "mileage"],
   },
@@ -183,9 +196,13 @@ export async function fillInvoice(p: FillInvoicePayload) {
     if (!MOT_STATUS_OPT[p.mot.status]) throw new Error(`Unsupported MOT status '${p.mot.status}' (calibrated: ${Object.keys(MOT_STATUS_OPT).join(", ")})`);
   }
 
-  // 1. Ensure Invoices view, then New Invoice
-  await clickImg(...C.invoicesNav); await sleep(1500);
-  await clickImg(...C.newInvoice); await sleep(2000);
+  // 1. Ensure Invoices view, then New Invoice — UNLESS filling a draft already open
+  //    (startFrom "current": the pool worker has opened the pre-reserved blank draft, and a
+  //    New Invoice here would grab a different number, defeating the reservation).
+  if ((p.startFrom ?? "new") === "new") {
+    await clickImg(...C.invoicesNav); await sleep(1500);
+    await clickImg(...C.newInvoice); await sleep(2000);
+  }
 
   // 2. Registration (double-paste — typing scrambles this combo field AND its first
   //    Ctrl+V is often eaten, which would leave VRM Lookup with nothing to look up)
