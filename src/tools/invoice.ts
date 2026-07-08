@@ -21,8 +21,8 @@
  * on the 2026-07-06 live runs (90708 Knoller, 90709 Hammond).
  */
 
-import { toAbsoluteCoords, macClick, assertScreenUnlocked } from "../helpers.js";
-import { vmSendKey, SCANCODES } from "../vm.js";
+import { toAbsoluteCoords, macClick, activateParallels, assertScreenUnlocked } from "../helpers.js";
+import { vmSendKey, vmSendKeyCombo, vmSetClipboard, SCANCODES } from "../vm.js";
 import { pasteField } from "./paste.js";
 import { selectDropdown } from "./dropdown.js";
 import { screenshot } from "./screenshot.js";
@@ -50,6 +50,44 @@ async function pasteSticky(x: number, y: number, text: string, selectAll = true)
   await pasteField({ x, y, text, selectAll });
 }
 
+// Like pasteSticky, but for EDITABLE-COMBO and Lookup-autocomplete cells — the registration
+// combo and the portal Description cells — where Ctrl+A does NOT reliably select the field.
+// That was the shared root cause of two gate-invisible bugs seen live on the 07-07 backlog:
+//   • the reg landing as "LT19 DHDLT19 DHD" — pasteSticky's second Ctrl+A didn't select, so the
+//     paste APPENDED instead of replacing (VRM Lookup then ran on garbage → no customer); and
+//   • line descriptions landing BLANK on multi-part invoices — the eaten first Ctrl+V, which a
+//     single selectAll:false paste can't survive; the blank/uncommitted row then shoved the
+//     following Qty/Price clicks onto the wrong cell (the observed "13.9" qty / £0 price).
+// Fix: clear with Home → Shift+End → Delete (works where Ctrl+A doesn't), paste, repeat once.
+// An eaten first paste still lands on the retry; a landed first paste is cleared before the
+// retry so it can never double. Single-line cells only (Home/Shift+End select one line — do
+// NOT use for the multi-line Description-tab box; that stays on pasteSticky/Ctrl+A).
+//
+// STILL DOUBLED LIVE on 2026-07-08 (reg landed "KN21 CVUKN21 CVU" on the very first invoice of
+// that session) despite the fix above. Root cause: no settle delay between macClick() returning
+// and the immediately-following Home keystroke. cliclick/prlctl are separate cross-process calls
+// with no delivery confirmation — the click can still be in flight when Home fires, so on the
+// 2nd loop iteration (field already has content from iteration 1) Home/Shift+End/Delete land as
+// no-ops (event dropped before focus/cursor settled) while the trailing Ctrl+V still lands,
+// APPENDING instead of replacing. Iteration 1 is unaffected only because an empty field can't
+// visibly double. Fix: an explicit settle sleep after the click, before any keystroke — the same
+// "settle after click, before acting" pattern selectDropdown() already relies on (dropdown.ts).
+const CLICK_SETTLE_MS = 200;
+async function pasteCombo(x: number, y: number, text: string): Promise<void> {
+  await vmSetClipboard(text);
+  const { absX, absY } = await toAbsoluteCoords(x, y);
+  for (let i = 0; i < 2; i++) {
+    await macClick(absX, absY);
+    await activateParallels();
+    await sleep(CLICK_SETTLE_MS);                  // let the click land before keystrokes race it
+    await vmSendKey(SCANCODES.home);
+    await vmSendKeyCombo([SCANCODES.shift, SCANCODES.end]);
+    await vmSendKey(SCANCODES.delete);            // deletes the Home→End selection (or no-op if empty)
+    await vmSendKeyCombo([SCANCODES.ctrl, SCANCODES.v]);
+    await sleep(180);
+  }
+}
+
 // --- Calibrated image-space coordinates (confirmed on 2026-07-06 live runs) ---
 const C = {
   invoicesNav: [263, 50],
@@ -63,8 +101,17 @@ const C = {
   tabParts: [329, 316],
   descBox: [400, 420],
   commitOff: [450, 470],       // neutral spot below portal rows to commit a row
+  jobLookupMagX: 31,           // Job Lookup magnifier on a labour row (click at (31, rowY))
+  predefAddToDoc: [1090, 959], // "Add to Document" in the Predefined Jobs modal
   issueBtn: [155, 85],
-  issueOnly: [749, 353],
+  issueOnly: [752, 353],       // "Issue Only" tab in the Issue/Add-Payments dialog (proven live 07-07)
+  // MOT Reminder interrupt dialogs — seen live 2026-07-08 on ~half of MOT-line invoices,
+  // depending on that vehicle's existing-reminder state in GA4 (unknowable ahead of time).
+  // Both variants' "decline" button sit in the y=545-558 band, which is BLANK background on
+  // the real Issue/Add-Payments dialog (below its payment-method row, above the Payments grid
+  // header) — so clicking these positions is a harmless no-op when neither dialog is showing.
+  motReminderDeclineNew: [578, 558],      // "No" — "Would you like to set an MOT reminder?" (no existing reminder)
+  motReminderDeclineUpdate: [606, 545],   // "Cancel" — "An existing reminder is due soon..." (untested live; see issueInvoice)
   // Portal rows: first empty row Y, step per committed row (~21px)
   rowY0: 365,
   rowStep: 21,
@@ -90,6 +137,43 @@ const C = {
 const MOT_TYPE_OPT: Record<string, [number, number]> = { "Full": [1097, 713] };
 const MOT_CLASS_OPT: Record<string, [number, number]> = { "TYPE A - RETAIL": [1105, 719] };
 const MOT_STATUS_OPT: Record<string, [number, number]> = { "Pass": [1098, 734] };
+
+// Predefined Jobs (the "Job Lookup" magnifier on a labour row). Picking one of these instead
+// of pasting makes the description EXACT (it's chosen from a list — cannot scramble the way a
+// pasted string can) and brings a preset labour rate. Confirmed live 2026-07-07: the magnifier
+// opens a modal listing the jobs; ">" adds a job to the Jobs Basket at a FIXED modal-row Y;
+// "Add to Document" (C.predefAddToDoc) then commits it onto the invoice's current empty row.
+// ELI has exactly two presets, both qty 1 @ £70.00 — override only when the web line differs.
+// Keyed by lower-cased description for a case-insensitive match against the web line.
+const PREDEFINED_JOB: Record<string, { addBtn: [number, number]; defQty: number; defPrice: number }> = {
+  "diagnostic check": { addBtn: [980, 164], defQty: 1, defPrice: 70 },
+  "mechanical labour": { addBtn: [980, 197], defQty: 1, defPrice: 70 },
+  "mechanical labor": { addBtn: [980, 197], defQty: 1, defPrice: 70 },
+};
+
+// Enter one portal line (labour or parts) by PASTE, with the scramble fix: the Description cell
+// is a Lookup autocomplete, so we paste it then COMMIT off-row to close the autocomplete BEFORE
+// touching Qty — otherwise the Qty click lands in the still-open Description field and the qty
+// digit is appended to the description ("Diagnostic Check" -> "Diagnostic Check1"), a mismatch
+// the totals gate cannot see. Root-caused + fixed live 2026-07-07. Qty/Price are plain numeric
+// cells (paste then commit). Single-paste throughout — the commit-between-cells step removes the
+// focus race that the old double-paste was masking, so double-paste is no longer needed here.
+async function pastePortalLine(
+  descX: number, qtyX: number, priceX: number, y: number,
+  line: InvoiceLine,
+): Promise<void> {
+  // Description via pasteCombo (clear-then-paste ×2) so it can't land blank or double — the
+  // multi-part scramble fix. Commit off-row to close the autocomplete BEFORE touching Qty,
+  // else the Qty click lands in the still-open Description field and its digit is appended to
+  // the description. Qty/Price also via pasteCombo: the same eaten-first-Ctrl+V can blank a
+  // numeric cell, and once the description reliably commits the row stays aligned so these land
+  // in the right cells (double-paste of a numeric cell is idempotent — safe).
+  await pasteCombo(descX, y, line.description);
+  await clickImg(...C.commitOff); await sleep(400);   // commit desc + close autocomplete
+  await pasteCombo(qtyX, y, line.qty);
+  await pasteCombo(priceX, y, line.unitPrice);
+  await clickImg(...C.commitOff); await sleep(400);
+}
 
 export interface InvoiceLine { description: string; qty: string; unitPrice: string }
 export interface InvoiceMot { type: string; classOption: string; status: string }
@@ -117,9 +201,15 @@ export const fillInvoiceTool = {
     "MUST verify from the returned screenshot that (1) the customer Acc No is correct and " +
     "(2) the Totals panel matches the web total to the penny, THEN call issue_invoice. This " +
     "collapses ~30 field-by-field round-trips into one server-side sequence. Assumes GA4 is " +
-    "open and the screen unlocked. Registration and every text/number field are DOUBLE-pasted " +
-    "(deterministic — never scrambles, and defeats GA4's intermittent first-Ctrl+V-eaten bug). " +
-    "If the vehicle is new to GA4, VRM Lookup pulls the vehicle but leaves the customer blank " +
+    "open and the screen unlocked. Labour lines whose description matches a Predefined Job " +
+    "(ELI: 'Diagnostic Check', 'Mechanical Labour') are added via the Job Lookup picker — exact " +
+    "description (chosen from a list, cannot scramble) at the preset rate, with qty/price " +
+    "overridden only if the web line differs. Other labour + all parts are pasted, committing " +
+    "the description off-row BEFORE qty so the qty digit can't leak into the description (the " +
+    "old gate-invisible scramble). Registration and line descriptions use a clear-then-paste " +
+    "(Home/Shift+End/Delete, ×2) that survives the eaten-first-Ctrl+V (blank) AND the combo that " +
+    "Ctrl+A can't select (the reg 'LT19 DHDLT19 DHD' doubling). If the vehicle is new to GA4, VRM " +
+    "Lookup pulls the vehicle but leaves the customer blank " +
     "(Acc No 'Auto Generate') — call attach_customer(surname) after, then verify. MOT currently " +
     "supports only the confirmed ELI option set (type Full, class 'TYPE A - RETAIL', status " +
     "Pass); other options error out until their popup coordinates are calibrated.",
@@ -200,49 +290,60 @@ export async function fillInvoice(p: FillInvoicePayload) {
   //    (startFrom "current": the pool worker has opened the pre-reserved blank draft, and a
   //    New Invoice here would grab a different number, defeating the reservation).
   if ((p.startFrom ?? "new") === "new") {
-    await clickImg(...C.invoicesNav); await sleep(1500);
-    await clickImg(...C.newInvoice); await sleep(2000);
+    await clickImg(...C.invoicesNav); await sleep(1200);
+    await clickImg(...C.newInvoice); await sleep(1500);
   }
 
-  // 2. Registration (double-paste — typing scrambles this combo field AND its first
-  //    Ctrl+V is often eaten, which would leave VRM Lookup with nothing to look up)
-  await pasteSticky(...C.regField, p.reg);
+  // 2. Registration — pasteCombo: typing scrambles this combo (it autocompletes against known
+  //    regs), its first Ctrl+V is often eaten, AND Ctrl+A doesn't select it (so pasteSticky
+  //    doubled it to "LT19 DHDLT19 DHD"). pasteCombo's Home/Shift+End/Delete clear + double
+  //    paste is the reliable path.
+  await pasteCombo(...C.regField, p.reg);
   await sleep(300);
 
-  // 3. VRM Lookup (fills vehicle + customer)
-  await clickImg(...C.vrmLookup); await sleep(2500);
+  // 3. VRM Lookup (fills vehicle + customer) — FileMaker's DVLA call is genuinely slow; this
+  //    wait is the hard floor of the sequence and is not safe to trim much further.
+  await clickImg(...C.vrmLookup); await sleep(2200);
 
   // 4. Dismiss "Open Document Exists" if present. Clicking Ignore's position is
   //    harmless when no dialog is up (lands in the History portal).
-  if (p.onOpenDoc !== "skip") { await clickImg(...C.ignoreBtn); await sleep(800); }
+  if (p.onOpenDoc !== "skip") { await clickImg(...C.ignoreBtn); await sleep(600); }
 
   // 5. Mileage
   await pasteInto(...C.mileage, String(p.mileage));
   await vmSendKey(SCANCODES.tab);
-  await sleep(300);
+  await sleep(250);
 
-  // 6. Labour lines
+  // 6. Labour lines. Prefer the Predefined-Jobs fast path (exact description, no paste, no
+  //    scramble, preset rate); fall back to the paste path for anything not in the preset list.
   if (p.labour?.length) {
-    await clickImg(...C.tabLabour); await sleep(900);
+    await clickImg(...C.tabLabour); await sleep(600);
     let y = C.rowY0;
     for (const l of p.labour) {
-      await pasteSticky(C.labourDesc, y, l.description);
-      await pasteSticky(C.labourQty, y, l.qty);
-      await pasteSticky(C.labourPrice, y, l.unitPrice);
-      await clickImg(...C.commitOff); await sleep(500);
+      const preset = PREDEFINED_JOB[l.description.trim().toLowerCase()];
+      if (preset) {
+        await clickImg(C.jobLookupMagX, y);  await sleep(900);   // open Predefined Jobs modal
+        await clickImg(...preset.addBtn);    await sleep(400);   // ">" -> Jobs Basket
+        await clickImg(...C.predefAddToDoc); await sleep(900);   // "Add to Document" -> line on row
+        // The preset lands qty 1 @ £70.00 — override only the cells the web line differs on.
+        const qtyDiff   = parseFloat(l.qty) !== preset.defQty;
+        const priceDiff = parseFloat(l.unitPrice) !== preset.defPrice;
+        if (qtyDiff)   await pasteField({ x: C.labourQty,   y, text: l.qty });
+        if (priceDiff) await pasteField({ x: C.labourPrice, y, text: l.unitPrice });
+        if (qtyDiff || priceDiff) { await clickImg(...C.commitOff); await sleep(350); }
+      } else {
+        await pastePortalLine(C.labourDesc, C.labourQty, C.labourPrice, y, l);
+      }
       y += C.rowStep;
     }
   }
 
-  // 7. Parts lines
+  // 7. Parts lines (free-text; no preset list — always the paste path)
   if (p.parts?.length) {
-    await clickImg(...C.tabParts); await sleep(900);
+    await clickImg(...C.tabParts); await sleep(600);
     let y = C.rowY0;
     for (const pt of p.parts) {
-      await pasteSticky(C.partsDesc, y, pt.description);
-      await pasteSticky(C.partsQty, y, pt.qty);
-      await pasteSticky(C.partsPrice, y, pt.unitPrice);
-      await clickImg(...C.commitOff); await sleep(500);
+      await pastePortalLine(C.partsDesc, C.partsQty, C.partsPrice, y, pt);
       y += C.rowStep;
     }
   }
@@ -260,14 +361,14 @@ export async function fillInvoice(p: FillInvoicePayload) {
 
   // 9. Description (optional) — paste works here; GA4 will Title-Case on commit.
   if (p.jobDescription) {
-    await clickImg(...C.tabDescription); await sleep(900);
+    await clickImg(...C.tabDescription); await sleep(600);
     await pasteSticky(...C.descBox, p.jobDescription);
     await sleep(300);
   }
 
   // 10. End on the Parts tab so the returned screenshot shows the parts portal +
   //     the Extras + Totals panels together (the gate the caller must verify).
-  await clickImg(...C.tabParts); await sleep(700);
+  await clickImg(...C.tabParts); await sleep(500);
   return screenshot();
 }
 
@@ -284,8 +385,37 @@ export const issueInvoiceTool = {
 
 export async function issueInvoice() {
   await assertScreenUnlocked();
-  await clickImg(...C.issueBtn); await sleep(1500);   // Issue → opens Issue/Add Payments dialog
-  await clickImg(...C.issueOnly); await sleep(1500);  // Issue Only
+  // Issue → normally opens the "Issue Invoice / Add Payments" dialog directly, but on an
+  // MOT-line invoice it can FIRST interrupt with an MOT-reminder prompt — seen live 2026-07-08,
+  // and unpredictable ahead of time (depends on that vehicle's existing-reminder state in GA4,
+  // not the invoice content). The old code blindly clicked Issue Only's fixed coords next, which
+  // land on the reminder dialog instead and do nothing — every MOT invoice with a reminder
+  // prompt needed a manual redo (Bloom, Richards, Yellon all hit this on the 07-08 backlog).
+  //
+  // Two variants observed:
+  //  (a) no existing reminder → "Would you like to set an MOT reminder?" [No/Yes(Auto)/Yes(Edit)].
+  //      Declining ("No") is expected to let the same Issue script continue straight into
+  //      Issue/Add-Payments (this is the behavior confirmed for "Yes (Auto)" on Richards/Yellon —
+  //      both proceeded directly to the dialog with no extra click needed).
+  //  (b) an existing reminder is "due soon" → "...update the existing MOT reminder?" [Cancel/Ok].
+  //      Only "Ok" was exercised live (Bloom) — it opened a full Vehicle-Reminders EDITOR
+  //      (Update Reminder → Close), a separate sub-form this function does not attempt to drive
+  //      blindly (mis-clicking inside a live reminder-date editor is a worse failure mode than
+  //      just not automating it). "Cancel" is UNTESTED — declining is assumed to skip the update
+  //      and continue the script, matching variant (a), but this is inferred, not confirmed.
+  //
+  // Both decline-button coordinates sit on blank background of the real Issue/Add-Payments
+  // dialog (see C.motReminderDecline* comments), so clicking both unconditionally is a harmless
+  // no-op whenever neither prompt is actually showing — no dialog-detection needed.
+  await clickImg(...C.issueBtn); await sleep(1200);
+  await clickImg(...C.motReminderDeclineNew);    await sleep(500);
+  await clickImg(...C.motReminderDeclineUpdate); await sleep(500);
+  // Defensive re-click: covers the case where a reminder interrupt consumed the first Issue
+  // click without auto-continuing into Issue/Add-Payments (e.g. if "Cancel" doesn't behave like
+  // "No" above, or the Vehicle-Reminders editor opened and was left showing). If Issue/Add-
+  // Payments is already open this is a no-op — clicking Issue again is blocked by that modal.
+  await clickImg(...C.issueBtn); await sleep(1500);
+  await clickImg(...C.issueOnly); await sleep(2000);  // Issue Only (no print/email/payment)
   return screenshot();
 }
 
