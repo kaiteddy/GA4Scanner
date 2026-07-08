@@ -90,14 +90,25 @@ export async function getParallelsWindow(forceRefresh = false): Promise<WindowIn
     return windowCache.info;
   }
   await assertScreenUnlocked();
+  // Select the window BY NAME ("Win11Manual"), not "first window of prl_client_app".
+  // "first window" is whichever Parallels window is topmost in z-order — if the small
+  // Parallels "Control Center" panel (or any other Parallels dialog) ends up above the VM
+  // console, "first window" silently returns ITS geometry. Every click then gets computed
+  // against the wrong window's position/size and lands on/near Control Center instead of
+  // GA4, while screenshots (a separate prlctl-capture path reading the VM framebuffer
+  // directly) keep looking perfectly correct — so the failure is invisible until you
+  // diagnose it via get_window_info. Naming the window makes this fail loudly instead.
   const script = `
 tell application "System Events"
     set prl to first process whose name is "prl_client_app"
-    set w to first window of prl
-    set wName to name of w
+    try
+        set w to first window of prl whose name is "Win11Manual"
+    on error
+        return "NOTFOUND"
+    end try
     set wPos to position of w
     set wSize to size of w
-    return ((item 1 of wPos) as text) & "," & ((item 2 of wPos) as text) & "," & ((item 1 of wSize) as text) & "," & ((item 2 of wSize) as text) & "," & wName
+    return ((item 1 of wPos) as text) & "," & ((item 2 of wPos) as text) & "," & ((item 1 of wSize) as text) & "," & ((item 2 of wSize) as text) & ",Win11Manual"
 end tell`;
   let result: string;
   try {
@@ -108,6 +119,15 @@ end tell`;
       "Parallels VM console window not found on the Mac (VM may be running headless after " +
         'its window was closed). Reopen it: Parallels menu bar → Window → "Win11Manual". ' +
         `Underlying error: ${e instanceof Error ? e.message.split("\n")[0] : e}`
+    );
+  }
+  if (result.trim() === "NOTFOUND") {
+    windowCache = null;
+    throw new Error(
+      'The "Win11Manual" Parallels window was not found (it may be minimized, or another ' +
+        'Parallels panel like "Control Center" is covering/replacing it in the window list). ' +
+        "Clicks would silently miss GA4 if we guessed — ask the user to click the Win11Manual " +
+        "VM window on the Mac to bring it forward, then retry."
     );
   }
   const parts = result.split(",").map((s) => s.trim());
