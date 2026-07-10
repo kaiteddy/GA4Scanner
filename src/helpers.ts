@@ -218,6 +218,39 @@ export async function macClick(absX: number, absY: number): Promise<string> {
   return `Clicked at macOS (${absX}, ${absY})`;
 }
 
+/**
+ * Click RELIABLY: two separate single clicks at the same spot with a settle gap.
+ *
+ * WHY: In GA4 (FileMaker in Parallels) a single click frequently does NOTHING —
+ * it is consumed as a window/field focus-activate event, so buttons don't fire
+ * and fields don't enter edit mode. Proven 07/09 with a clean discriminator:
+ * single-click a field + type "111" → nothing appears; then double-click + type
+ * "222" → the field shows "111222" (the first click never opened edit mode, so
+ * the keystrokes buffered and only flushed once the second click opened it).
+ * This is the real cause of the session's "dropped clicks", "input lag", and
+ * "doubled reg/mileage" — NOT time-based lag. click_menu_button already relied
+ * on this ("first click does nothing, second opens the menu"); this generalizes
+ * it to every click.
+ *
+ * Two separate `c:` clicks (not a `dc:` double-click event) are used on purpose:
+ * they deliver single-click SEMANTICS to the control (no word-select / open-
+ * record side effects), while the throwaway first click covers the eaten
+ * activation. The first click being consumed makes the pair land as one
+ * effective click; if the control was already warm, the second lands on the
+ * same spot (re-focus / re-select — harmless for fields, buttons, list rows).
+ * For a genuine toggle where a second same-spot click would undo the first,
+ * call macClick directly (the click tool exposes this via `single: true`).
+ */
+export async function macClickReliable(absX: number, absY: number): Promise<string> {
+  await activateParallels();
+  await exec("cliclick", ["c:" + absX + "," + absY]);
+  await new Promise((r) => setTimeout(r, 250));
+  await activateParallels();
+  await exec("cliclick", ["c:" + absX + "," + absY]);
+  await new Promise((r) => setTimeout(r, 150));
+  return `Clicked (reliable ×2) at macOS (${absX}, ${absY})`;
+}
+
 /** Double-click at macOS screen coordinates using cliclick (activates Parallels first) */
 export async function macDoubleClick(absX: number, absY: number): Promise<string> {
   await activateParallels();

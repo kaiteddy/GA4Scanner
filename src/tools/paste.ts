@@ -1,4 +1,4 @@
-import { toAbsoluteCoords, macClick, activateParallels } from "../helpers.js";
+import { toAbsoluteCoords, macClickReliable, activateParallels } from "../helpers.js";
 import { vmSetClipboard, vmSendKeyCombo, SCANCODES } from "../vm.js";
 
 export const pasteFieldTool = {
@@ -29,9 +29,12 @@ export async function pasteField(args: { x: number; y: number; text: string; sel
   const selectAll = args.selectAll !== false;
   await vmSetClipboard(args.text);
   const { absX, absY } = await toAbsoluteCoords(args.x, args.y);
-  await macClick(absX, absY);
-  // macClick already activated Parallels; activateParallels() below is a cached
-  // no-op in the common case (see helpers.ts fast path) so this stays cheap.
+  // Reliable (×2) click: a single click often only focus-activates the field
+  // without entering edit mode, so the paste lands nowhere. The second click
+  // is what actually opens the field for input. (See macClickReliable.)
+  await macClickReliable(absX, absY);
+  // macClickReliable already activated Parallels; activateParallels() below is a
+  // cached no-op in the common case (see helpers.ts fast path) so this stays cheap.
   await activateParallels();
   if (selectAll) {
     await vmSendKeyCombo([SCANCODES.ctrl, SCANCODES.a]);
