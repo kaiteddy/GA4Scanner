@@ -26,7 +26,7 @@
  */
 
 import { toAbsoluteCoords, macClick, macClickReliable, macDoubleClick, activateParallels, assertScreenUnlocked, invalidateWindowCache } from "../helpers.js";
-import { vmSendKey, vmSendKeyCombo, vmSendKeyRepeat, vmSetClipboard, vmTypeText, SCANCODES } from "../vm.js";
+import { vmSendKey, vmSendKeyCombo, vmSendKeyRepeat, vmSetClipboard, vmTypeText, ensureNumLockOff, SCANCODES } from "../vm.js";
 import { pasteField } from "./paste.js";
 import { selectDropdown } from "./dropdown.js";
 import { screenshot } from "./screenshot.js";
@@ -664,6 +664,7 @@ export const fillInvoiceTool = {
 
 export async function fillInvoice(p: FillInvoicePayload) {
   await assertScreenUnlocked();
+  await ensureNumLockOff(); // guest NumLock ON makes keypad Home/End type "7"/"1" and corrupts every cell
   invalidateWindowCache(); // re-measure the VM window once (its size can change across a restart)
   clearGroundingCache();   // re-verify element positions once at the current resolution, then reuse
 
@@ -726,6 +727,7 @@ export async function fillLines(p: FillInvoicePayload) {
   // entry point can be called with GA4 backgrounded, and a capture of a stale/black frame makes
   // the very first clickLabel("Labour") fail with "no on-screen text matches".
   await assertScreenUnlocked();
+  await ensureNumLockOff();
   invalidateWindowCache();
   clearGroundingCache();
 

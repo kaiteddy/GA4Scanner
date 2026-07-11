@@ -186,6 +186,62 @@ export async function vmSendKeyRepeat(scancode: number, times: number): Promise<
   await vmSendKeyEvents(evs);
 }
 
+/**
+ * Read the guest's live NumLock state from SESSION 1.
+ *
+ * MUST use `--current-user`: a plain `prlctl exec` runs as SYSTEM in session 0, whose
+ * keyboard LED state is not the interactive user's — and whose PowerShell stdout is not even
+ * captured. `--current-user` runs as the console user in session 1 (same session as GA4) and
+ * returns output. Returns null if unreadable (don't act on an unknown state).
+ */
+export async function readGuestNumLock(): Promise<boolean | null> {
+  try {
+    const out = (
+      await exec("prlctl", [
+        "exec", VM_NAME, "--current-user",
+        "powershell", "-NoProfile", "-Command", "[console]::NumberLock",
+      ])
+    ).replace(/\r/g, "").trim();
+    if (/^true$/i.test(out)) return true;
+    if (/^false$/i.test(out)) return false;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Guarantee guest NumLock is OFF before any keystroke transport runs. THE fix for the
+ * corruption class root-caused 2026-07-11.
+ *
+ * WHY: the nav-cluster scancodes this module sends — home=71 (0x47), end=79 (0x4F), arrows,
+ * insert=82, del=83 — are the NUMERIC-KEYPAD keys. With NumLock ON they type digits
+ * ("7","1","8","2"…) instead of moving the caret, so setCell's clear-sequence
+ * (Home → Shift+End → Delete) never clears the cell and every paste APPENDS. That is the
+ * entire "qty 1 → 7771", "price 99.00 → 777799.40", duplicated-description garbling we chased
+ * for days — the glyphs are always 7s/1s because 0x47=KP7 and 0x4F=KP1. Windows/VMs boot with
+ * NumLock ON, which is why it "came back" after every restart and toggled in waves. With
+ * NumLock OFF the same scancodes are Home/End and the existing code is correct.
+ *
+ * Toggle via scancode 69 (NumLock itself — a NON-extended, unambiguous key) over the same
+ * send-key-event channel that reaches GA4 (verified: flips True→False). Read-verify after.
+ * Throws rather than proceed into guaranteed corruption if it can't be turned off.
+ */
+export async function ensureNumLockOff(): Promise<void> {
+  const before = await readGuestNumLock();
+  if (before !== true) return; // already OFF, or unreadable — do NOT blind-toggle (could turn it ON)
+  await vmSendKey(69); // NumLock press+release toggles it
+  await new Promise((r) => setTimeout(r, 150));
+  const after = await readGuestNumLock();
+  if (after === true) {
+    throw new Error(
+      "Guest NumLock is ON and would not turn OFF — keypad scancodes (Home/End) would type " +
+        "digits and corrupt every field. Aborting before touching data. Press NumLock on the " +
+        "guest keyboard (or check the send-key-event channel) and retry."
+    );
+  }
+}
+
 // Keyboard scan codes (US keyboard)
 export const SCANCODES: Record<string, number> = {
   escape: 1, esc: 1,
