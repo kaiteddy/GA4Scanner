@@ -229,17 +229,22 @@ export async function readGuestNumLock(): Promise<boolean | null> {
  */
 export async function ensureNumLockOff(): Promise<void> {
   const before = await readGuestNumLock();
-  if (before !== true) return; // already OFF, or unreadable — do NOT blind-toggle (could turn it ON)
-  await vmSendKey(69); // NumLock press+release toggles it
-  await new Promise((r) => setTimeout(r, 150));
-  const after = await readGuestNumLock();
-  if (after === true) {
-    throw new Error(
-      "Guest NumLock is ON and would not turn OFF — keypad scancodes (Home/End) would type " +
-        "digits and corrupt every field. Aborting before touching data. Press NumLock on the " +
-        "guest keyboard (or check the send-key-event channel) and retry."
-    );
+  if (before === true) {
+    await vmSendKey(69); // NumLock press+release toggles it
+    await new Promise((r) => setTimeout(r, 150));
+    const after = await readGuestNumLock();
+    if (after === true) {
+      throw new Error(
+        "Guest NumLock is ON and would not turn OFF — keypad scancodes (Home/End) would type " +
+          "digits and corrupt every field. Aborting before touching data. Press NumLock on the " +
+          "guest keyboard (or check the send-key-event channel) and retry."
+      );
+    }
   }
+  // The prlctl-exec NumLock read above briefly blanks the `prlctl capture` framebuffer (~1-2s);
+  // settle so the caller's first OCR sees a fully-painted frame (ocrScreen also retries, this
+  // just avoids the wasted captures).
+  await new Promise((r) => setTimeout(r, 1200));
 }
 
 // Keyboard scan codes (US keyboard)

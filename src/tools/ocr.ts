@@ -63,25 +63,40 @@ async function ensureBin(): Promise<void> {
  *  resolution key and bulk-caches every unambiguous label for later instant clicks. */
 export async function ocrScreen(accurate = true): Promise<OcrBox[]> {
   await ensureBin();
-  const ts = Date.now();
-  const raw = `/tmp/ga4_ocr_${ts}_raw.png`;
-  const img = `/tmp/ga4_ocr_${ts}.png`;
-  try {
-    await exec("prlctl", ["capture", VM_NAME, "--file", raw]);
-    await exec("sips", ["-s", "format", "png", "--resampleWidth", "1200", raw, "--out", img]);
-    const out = await exec(BIN, accurate ? [img, "--accurate"] : [img]);
-    const parsed = JSON.parse(out) as { h: number; boxes: OcrBox[] };
-    curImgH = parsed.h || curImgH;
-    const boxes = parsed.boxes || [];
-    // Bulk-cache: any label appearing EXACTLY ONCE is safe to remember for a no-OCR click later.
-    const counts = new Map<string, number>();
-    for (const b of boxes) counts.set(norm(b.text), (counts.get(norm(b.text)) ?? 0) + 1);
-    for (const b of boxes) if (counts.get(norm(b.text)) === 1) coordMemo.set(memoKey(curImgH, b.text), { cx: b.cx, cy: b.cy });
-    return boxes;
-  } finally {
-    await unlink(raw).catch(() => {});
-    await unlink(img).catch(() => {});
+  // Retry on an EMPTY or HALF-PAINTED capture. `prlctl capture` intermittently returns a black
+  // or partially-rendered frame — notably for ~1-2s right after a `prlctl exec` runs (e.g. the
+  // ensureNumLockOff NumLock read blanks the framebuffer momentarily). A fully-rendered GA4
+  // screen always yields ~100+ boxes; a bad frame yields 0 (black) or a handful (just the title
+  // bar painted). Either way it's not a legitimate result — a real "element not on screen" case
+  // still returns the full ~100-box frame minus that one element. So keep re-capturing until the
+  // frame looks complete, rather than let the caller mis-conclude "element not on screen".
+  const MIN_COMPLETE_BOXES = 25;
+  let boxes: OcrBox[] = [];
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const ts = Date.now();
+    const raw = `/tmp/ga4_ocr_${ts}_${attempt}_raw.png`;
+    const img = `/tmp/ga4_ocr_${ts}_${attempt}.png`;
+    try {
+      await exec("prlctl", ["capture", VM_NAME, "--file", raw]);
+      await exec("sips", ["-s", "format", "png", "--resampleWidth", "1200", raw, "--out", img]);
+      const out = await exec(BIN, accurate ? [img, "--accurate"] : [img]);
+      const parsed = JSON.parse(out) as { h: number; boxes: OcrBox[] };
+      curImgH = parsed.h || curImgH;
+      boxes = parsed.boxes || [];
+    } catch {
+      boxes = [];
+    } finally {
+      await unlink(raw).catch(() => {});
+      await unlink(img).catch(() => {});
+    }
+    if (boxes.length >= MIN_COMPLETE_BOXES) break;
+    await new Promise((r) => setTimeout(r, 500));
   }
+  // Bulk-cache: any label appearing EXACTLY ONCE is safe to remember for a no-OCR click later.
+  const counts = new Map<string, number>();
+  for (const b of boxes) counts.set(norm(b.text), (counts.get(norm(b.text)) ?? 0) + 1);
+  for (const b of boxes) if (counts.get(norm(b.text)) === 1) coordMemo.set(memoKey(curImgH, b.text), { cx: b.cx, cy: b.cy });
+  return boxes;
 }
 
 /** Find on-screen text boxes matching `text` (exact, case/space-insensitive; falls back to substring). */
