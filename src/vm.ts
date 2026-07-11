@@ -3,7 +3,7 @@
  * This bypasses macOS entirely - clicks and keystrokes go directly into Windows.
  */
 
-import { exec } from "./helpers.js";
+import { exec, execWithInput, activateParallels } from "./helpers.js";
 
 const VM_NAME = "Win11Manual";
 const SCRIPTS_DIR = "C:\\GA4Scripts";
@@ -50,12 +50,85 @@ export async function vmExecCommand(command: string): Promise<string> {
  * Set the VM's clipboard (shared with the interactive GA4 session — unlike
  * keystrokes sent via `prlctl exec`, which are session-isolated). This is the
  * deterministic path for exact text entry: paste can't scramble characters
- * the way per-key scancode typing can. Single quotes are doubled for
- * PowerShell's single-quoted string escaping.
+ * the way per-key scancode typing can.
+ *
+ * PERF: the old path shelled into the guest (`prlctl exec ... Set-Clipboard`),
+ * paying a full PowerShell cold-start — MEASURED at ~1000ms, every single paste.
+ * Parallels' Shared Clipboard (verified on: `prlctl list -i` → "Shared clipboard
+ * mode: on") already mirrors the Mac pasteboard into Windows, so `pbcopy` does
+ * the same job in ~30ms. Verified live: pbcopy a marker, then Get-Clipboard in
+ * the guest returned it on the first probe.
+ *
+ * The sync rides on the VM window being active, so activate first — which every
+ * caller needs anyway before clicking/typing, and is a ~25ms cached no-op.
+ * `pbcopy` takes the text on stdin, so it never touches a shell quoting layer:
+ * apostrophes, ampersands and newlines pass through verbatim (the old
+ * PowerShell path had to double every `'`).
  */
+// Mac→guest sync is fast, but "how fast" can't be measured directly: the only
+// guest-side probe (Get-Clipboard) costs ~700ms itself, which masks the very
+// latency it would report (it synced 4/4 even with a 0ms sleep). So this is a
+// deliberate guard rather than a measured floor. Every real caller inserts a
+// click (~400ms) between vmSetClipboard and the Ctrl+V that consumes it, so
+// this only has to cover a caller that pastes immediately.
+const CLIPBOARD_SYNC_MS = 40;
+
 export async function vmSetClipboard(text: string): Promise<void> {
+  await activateParallels();
+  await execWithInput("pbcopy", [], text);
+  await new Promise((r) => setTimeout(r, CLIPBOARD_SYNC_MS));
+}
+
+/** Read the guest clipboard (slow: ~1s PowerShell). Used only to verify a sync. */
+export async function vmGetClipboard(): Promise<string> {
+  return (await vmExecCommand("Get-Clipboard")).replace(/\r/g, "").trim();
+}
+
+/**
+ * Set the guest clipboard the slow-but-direct way, bypassing Mac↔VM sync.
+ * Kept as a fallback for when Shared Clipboard is off or the sync is untrusted.
+ */
+export async function vmSetClipboardViaGuest(text: string): Promise<void> {
   const escaped = text.replace(/'/g, "''");
   await vmExecCommand(`Set-Clipboard -Value '${escaped}'`);
+}
+
+/**
+ * KEYSTROKE TRANSPORT — why this is deliberately "slow".
+ *
+ * `prlctl send-key-event --json` accepts an array of press/release events on stdin and
+ * delivers them all in ONE ~100ms spawn, versus ~100ms PER EVENT for the flag form. It
+ * genuinely delivers (verified with a NumLock oracle), and it looked like a ~100x win.
+ *
+ * It is NOT SAFE for text entry, proven live on 2026-07-10 against a GA4 Lookup cell:
+ *   • typing "Mechanical Labour" with no inter-event delay committed "Mechanical Labo" —
+ *     trailing keys dropped;
+ *   • a batched Ctrl+V pasted its clipboard SEVEN times ("Castrol…Castrol…Castrol…"), i.e.
+ *     the guest saw Ctrl held down and AUTO-REPEATED it;
+ *   • adding the per-event `delay` field (which prlctl does honour) didn't fix it — it
+ *     produced empty cells and garbage like "Mechanical Labocccc".
+ * Events fired back-to-back arrive faster than the guest's keyboard handler retires them,
+ * so a press whose release hasn't landed yet reads as a held key. The old spawn-per-event
+ * pacing was never wasted overhead — it WAS the inter-key delay.
+ *
+ * So: keep the paced, one-spawn-per-event path for correctness. The speed comes from not
+ * needing many keystrokes at all — text goes in via a single clipboard PASTE (length
+ * independent), which is only reliable now because setCell double-clicks the cell into
+ * edit mode first. See setCell in tools/invoice.ts.
+ *
+ * `vmSendKeyEvents` is kept for the one safe case: a burst of taps of the SAME key where
+ * an extra repeat is harmless and idempotent (clearing a field with backspace).
+ */
+export interface KeyEvent { scancode: number; event: "press" | "release"; delay?: number }
+
+const MAX_EVENTS_PER_BATCH = 400;
+
+/** Batched, paced key events in one spawn. Only safe for idempotent taps — see the note above. */
+export async function vmSendKeyEvents(events: KeyEvent[]): Promise<void> {
+  for (let i = 0; i < events.length; i += MAX_EVENTS_PER_BATCH) {
+    const chunk = events.slice(i, i + MAX_EVENTS_PER_BATCH);
+    await execWithInput("prlctl", ["send-key-event", VM_NAME, "--json"], JSON.stringify(chunk));
+  }
 }
 
 /** Send a key scancode to the VM's virtual keyboard */
@@ -90,6 +163,27 @@ export async function vmSendKeyCombo(scancodes: number[]): Promise<void> {
     await exec("prlctl", ["send-key-event", VM_NAME, "--scancode", String(sc), "--event", "release"]);
     await new Promise((r) => setTimeout(r, 30));
   }
+}
+
+/**
+ * Tap the same key `times` times, paced, in one spawn.
+ *
+ * Safe to batch ONLY because the callers use it to CLEAR a field with backspace: an extra
+ * repeat on an already-empty field is a no-op, and a dropped one is caught by the read-back.
+ * The 25ms delay keeps the guest from seeing the key as held (a held backspace auto-repeats
+ * unbounded, which is what ate whole cells during the 07/10 experiments).
+ */
+const TAP_DELAY_MS = 25;
+
+export async function vmSendKeyRepeat(scancode: number, times: number): Promise<void> {
+  const evs: KeyEvent[] = [];
+  for (let i = 0; i < times; i++) {
+    evs.push(
+      { scancode, event: "press", delay: TAP_DELAY_MS },
+      { scancode, event: "release", delay: TAP_DELAY_MS }
+    );
+  }
+  await vmSendKeyEvents(evs);
 }
 
 // Keyboard scan codes (US keyboard)
@@ -155,6 +249,11 @@ export const CHAR_SCANCODES: Record<string, { sc: number; shift: boolean }> = ((
  * characters are silently skipped.
  */
 export async function vmTypeText(text: string): Promise<void> {
+  // Paced, one key at a time. Batching this into a single call LOOKED ~100x faster but
+  // silently dropped and repeated characters in GA4's Lookup cells (see the transport note
+  // above) — it fails in exactly the way that survives the totals gate. Text should go in
+  // via vmSetClipboard + Ctrl+V instead; this stays for the few short, literal cases where
+  // a paste can't be used (and where its cost is a handful of characters, not 40).
   for (const ch of text) {
     const entry = CHAR_SCANCODES[ch];
     if (!entry) continue;

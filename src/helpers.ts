@@ -1,4 +1,4 @@
-import { execFile } from "child_process";
+import { execFile, spawn } from "child_process";
 import { promisify } from "util";
 
 const execFileAsync = promisify(execFile);
@@ -7,13 +7,42 @@ const execFileAsync = promisify(execFile);
 export async function exec(
   cmd: string,
   args: string[],
-  options?: { input?: string; maxBuffer?: number }
+  options?: { maxBuffer?: number }
 ): Promise<string> {
   const { stdout } = await execFileAsync(cmd, args, {
     maxBuffer: 50 * 1024 * 1024, // 50MB for screenshots
     ...options,
   });
   return stdout.trim();
+}
+
+/**
+ * Run a command, writing `input` to its stdin.
+ *
+ * `exec()` used to advertise an `input` option, but it forwards to execFile(),
+ * which has NO such option — it was silently dropped and the child was left
+ * waiting on a stdin that never closed. Anything needing stdin (prlctl's
+ * `send-key-event --json`) must go through spawn and close the pipe explicitly.
+ */
+export async function execWithInput(
+  cmd: string,
+  args: string[],
+  input: string
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args);
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (d) => (stdout += d));
+    child.stderr.on("data", (d) => (stderr += d));
+    child.on("error", reject);
+    child.on("close", (code) =>
+      code === 0
+        ? resolve(stdout.trim())
+        : reject(new Error(`${cmd} exited ${code}: ${stderr.trim()}`))
+    );
+    child.stdin.end(input);
+  });
 }
 
 /** Run osascript with the given AppleScript */
@@ -83,6 +112,17 @@ export async function assertScreenUnlocked(): Promise<void> {
  */
 const WINDOW_CACHE_MS = 30000;
 let windowCache: { info: WindowInfo; at: number } | null = null;
+
+/**
+ * Drop the cached window geometry so the next getParallelsWindow() re-measures.
+ * Call at the start of an operation that may run after the VM window has moved or
+ * resized (e.g. a VM restart changes the console window size — seen 2026-07-10:
+ * 1407→1514 wide). A single fresh measurement then repopulates the 30s cache for
+ * the rest of that operation.
+ */
+export function invalidateWindowCache(): void {
+  windowCache = null;
+}
 
 /** Get the Parallels VM window position and size */
 export async function getParallelsWindow(forceRefresh = false): Promise<WindowInfo> {
@@ -182,17 +222,43 @@ export async function toAbsoluteCoords(
 const FRONTMOST_QUERY =
   "tell application \"System Events\" to get name of first process whose frontmost is true";
 
+/**
+ * Is Parallels frontmost? Measured: `lsappinfo front` + name lookup ≈ 25ms vs
+ * ~185ms for the equivalent osascript. This runs TWICE per reliable click and
+ * once per keystroke batch, so on a ~40-cell invoice the osascript version
+ * burned ~15s doing nothing but asking the same question. Falls back to
+ * osascript if lsappinfo is unavailable or its output is unexpected.
+ *
+ * lsappinfo reports the LSDisplayName ("Parallels Desktop"); System Events
+ * reports the process name ("prl_client_app"). Both are accepted.
+ */
+async function isParallelsFrontmost(): Promise<boolean | null> {
+  try {
+    const asn = await exec("lsappinfo", ["front"]);
+    if (!asn) return null;
+    const name = await exec("lsappinfo", ["info", "-only", "name", asn.trim()]);
+    if (!name) return null;
+    return /prl_client_app|Parallels Desktop/i.test(name);
+  } catch {
+    return null; // probe unavailable — caller falls back
+  }
+}
+
 export async function activateParallels(): Promise<void> {
   await assertScreenUnlocked();
   // PERF fast path: within one invoice entry, Parallels is almost always
   // already frontmost from the previous action — the old code always paid
   // set-frontmost + sleep(200) + verify (~500ms) even then. One cheap check
-  // first turns the common case into a single ~150ms osascript call.
-  try {
-    const front = await osascript(FRONTMOST_QUERY);
-    if (front.trim() === "prl_client_app") return;
-  } catch {
-    // fall through to the slow retry path below
+  // first turns the common case into a single ~25ms lsappinfo call.
+  const fast = await isParallelsFrontmost();
+  if (fast === true) return;
+  if (fast === null) {
+    try {
+      const front = await osascript(FRONTMOST_QUERY);
+      if (front.trim() === "prl_client_app") return;
+    } catch {
+      // fall through to the slow retry path below
+    }
   }
   // Slow path: retry until Parallels is confirmed frontmost. Some machines
   // have apps (Mail/Safari notifications) that aggressively re-grab focus,

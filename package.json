@@ -5,7 +5,8 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && npm run build:ocr",
+    "build:ocr": "mkdir -p dist/native && swiftc -O native/ocr.swift -o dist/native/ocr",
     "start": "node dist/index.js"
   },
   "dependencies": {
