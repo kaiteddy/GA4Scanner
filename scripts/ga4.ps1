@@ -84,6 +84,20 @@ switch ($Cmd) {
     $out = if ($A3) { $A3 } else { "$env:TEMP\ga4_after.png" }
     Capture $hwnd $out
   }
+  "dclick" {
+    Focus-GA4 $hwnd
+    $r = Rect-GA4 $hwnd
+    $sx = $r.Left + [int]$A1; $sy = $r.Top + [int]$A2
+    [G]::SetCursorPos($sx,$sy) | Out-Null; Start-Sleep -Milliseconds 150
+    Write-Output "img=($A1,$A2) -> screen=($sx,$sy)"
+    [G]::mouse_event($LEFTDOWN,0,0,0,[IntPtr]::Zero); Start-Sleep -Milliseconds 40
+    [G]::mouse_event($LEFTUP,0,0,0,[IntPtr]::Zero); Start-Sleep -Milliseconds 60
+    [G]::mouse_event($LEFTDOWN,0,0,0,[IntPtr]::Zero); Start-Sleep -Milliseconds 40
+    [G]::mouse_event($LEFTUP,0,0,0,[IntPtr]::Zero)
+    Start-Sleep -Milliseconds 1500
+    $out = if ($A3) { $A3 } else { "$env:TEMP\ga4_after.png" }
+    Capture $hwnd $out
+  }
   "type" {
     Focus-GA4 $hwnd
     Add-Type -AssemblyName System.Windows.Forms
