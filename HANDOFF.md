@@ -31,8 +31,29 @@ Clicking **Issue** does NOT go straight to the payments dialog. Actual sequence:
 4. **Issue** again → *Issue Invoice / Add Payments* → **Issue Only** (img 2060,728).
 5. Verify: `ga4_uia.ps1 header` must report `(Issued)`; Invoices-In-Progress count drops by one.
 
-`ga4_fill.ps1`'s step-10 blind AbsClick chain does NOT match this sequence — it assumes
-"Yes(Auto)" reminder dialogs. **Fix it or keep issuing supervised.**
+The chain VARIES by invoice content — there is no single fixed click sequence:
+- **MOT on the invoice + vehicle already has an MOT reminder** → "An existing reminder is due soon"
+  → Ok → *Vehicle Reminders* (Update Reminder) → Close → **Issue again**.
+- **MOT + vehicle has NO reminder** → "Would you like to set an MOT reminder?" with
+  **No / Yes (Auto) / Yes (Edit)**. Yes (Edit) opens the same dialog with an **Add Reminder**
+  button and is non-committal — prefer it when the date needs checking.
+- **Service/oil-change work on the invoice** → a separate **Service Reminder** prompt
+  (No / Yes (Auto) / Yes (Edit)), which appears *after* the MOT one.
+- **No MOT** → no MOT prompt at all.
+- Account customers open as **"Account Invoice"** not "Standard Invoice"; the payments dialog says
+  payments are optional and the balance is managed on the customer account. `header` still matches.
+
+### MOT reminder due dates — get this right
+The reminder due date should be the **new certificate expiry**, not "52 weeks from today"
+(GA4's default, which is usually wrong).
+- Vehicle HAS a prior expiry and was tested within the month before it → **the expiry date is
+  preserved exactly**: old expiry + 1 year (e.g. 30/07/2026 → 30/07/2027).
+- No prior expiry known → test date + 12 months, expiring the day before the anniversary
+  (tested 17/07/2026 → 16/07/2027).
+Read the existing date from the "N Existing Reminders for: <REG>" grid in the dialog before typing.
+
+`ga4_fill.ps1`'s step-10 blind AbsClick chain does NOT match any of this — it assumes a fixed
+"Yes(Auto)" chain. **Keep issuing supervised until it is rewritten to branch on what appears.**
 
 ## Portal line-item entry — what works (verified live on 90808, 2026-07-21)
 Labour columns are **Desc | Tech | Qty | Unit Price**. Two traps:
@@ -48,12 +69,25 @@ Also: while a popup is open FileMaker **blanks MainWindowTitle**, so the title-b
 `Get-Process` lookup fails and every command dies `GA4_NOT_FOUND` — including the Escape needed to
 close the popup. `ga4.ps1` now falls back to finding the window by **class** (`FMPRO*`).
 
+## Reconciliation state (2026-07-21)
+Backlog cleared: **90809 £45.00, 90810 £663.94, 90811 £300.68, 90812 £355.42** all filled, issued
+and pool-marked `filled`, each verified to the penny. With 90807/90808 that is 6 issued today.
+
+Outstanding:
+1. **90813** — claimed 2026-07-21 08:49 by web doc 420631 (Mr Kass, 241DK, MOT £45.00,
+   mileage 14927) *while this session was running*. Not started.
+2. **90800** — web doc 420605 (Bezalel, EX10 ZYR, £77.22) is still `docStatus='New'` and has no
+   `ga4Number` stamped. Looks like a genuine draft, not backlog — confirm before filling.
+3. **90799** — an empty blank in GA4 that the pool does not track at all (pool starts at 90800).
+4. **90814** — the only remaining `available` blank. **Pool is nearly dry; replenish soon.**
+5. Web doc 90853 (id 420618, Mrs Vecht, V3CHT) is £0.00 / `New` with no pool claim — likely abandoned.
+
 ## Next steps
-1. **90809** — claimed by web doc 420625, not started. Generate a work order from Neon
-   (`serviceHistory` + `serviceLineItems` where `documentId` = the claiming doc) as for 90808.
-2. Reconcile `ga4_fill.ps1` step 10 (`-Issue`) with the real dialog chain above — it still assumes
-   "Yes(Auto)" reminder dialogs. Until then **always run without `-Issue`** and issue supervised.
-3. Consider filling the Part Number column for parts lines (web `partNumber` is currently dropped).
+1. Fill **90813** from doc 420631 (MOT-only, same shape as 90809).
+2. Create more blanks in GA4 and add them to the pool — only 90814 is free.
+3. Rewrite `ga4_fill.ps1` step 10 (`-Issue`) to branch on the dialog actually shown (see chain
+   above). Until then **always run without `-Issue`** and issue supervised.
+4. Consider filling the Part Number column for parts lines (web `partNumber` is currently dropped).
 
 ## Notes
 - Logged into GA4 as **Admin**; keep the GA4 window **maximized** for stable coords (display is

@@ -140,9 +140,11 @@ if ($j.parts) {
   $i = 0
   foreach ($p in $j.parts) {
     $y = 889 + ($i * 50)
-    Ga4 @("cell","510","$y","$($p.desc)")
-    Ga4 @("cell","2315","$y","$($p.qty)")
-    Ga4 @("cell","2424","$y","$($p.price)")
+    # Same Escape-after-commit guard as labour: a preset-matching part name (Oil Filter, Fan Belt)
+    # opens a popup that covers the Qty/Price cells. Harmless no-op when no popup appears.
+    Ga4 @("cell","510","$y","$($p.desc)");   Ga4 @("key","1B")
+    Ga4 @("cell","2315","$y","$($p.qty)");   Ga4 @("key","1B")
+    Ga4 @("cell","2424","$y","$($p.price)"); Ga4 @("key","1B")
     $i++
   }
 }
