@@ -113,19 +113,23 @@ Write-Host "  vehicle OK: $rvNow"
 # ---- 3) Mileage -----------------------------------------------------------------------------
 if ($j.mileage) { Ga4 @("cell","362","604","$($j.mileage)") }
 
-# ---- 4) Labour lines (preset descriptions get re-applied after qty/price; see recipe) --------
+# ---- 4) Labour lines --------------------------------------------------------------------------
+# Columns are Desc | Tech | Qty | Unit Price. Two traps, both verified live on 90808 (2026-07-21):
+#   1. Committing the Description opens the Tech pop-up menu, which covers the Qty/Price cells.
+#      Any click aimed at them lands on the menu instead, so the value never arrives. Escape it
+#      after EVERY cell commit and the next click lands cleanly.
+#   2. `gridrow` (Desc,Tab,Tab=Qty,Tab=Price) is WRONG for a fresh, empty portal row: GA4 creates
+#      the row on commit and returns focus to Description, so the qty overwrites the description
+#      and the price is lost. It produced a row literally described "0.5" with no price.
+# Per-cell clicks + Escape are what actually work. Keep them.
 if ($j.labour) {
   Ga4 @("click","580","770"); Start-Sleep -Milliseconds 700
   $i = 0
   foreach ($l in $j.labour) {
     $y = 889 + ($i * 50)
-    Ga4 @("cell","221","$y","$($l.desc)")
-    Ga4 @("cell","2315","$y","$($l.qty)")
-    Ga4 @("cell","2424","$y","$($l.price)")
-    # a preset-matching description (e.g. Mechanical Labour) is dropped when qty/price commit -
-    # re-apply on the now-existing row, then Esc the Tech dropdown that opens.
-    Ga4 @("cell","221","$y","$($l.desc)")
-    Ga4 @("key","1B")
+    Ga4 @("cell","680","$y","$($l.desc)");   Ga4 @("key","1B")
+    Ga4 @("cell","2317","$y","$($l.qty)");   Ga4 @("key","1B")
+    Ga4 @("cell","2426","$y","$($l.price)"); Ga4 @("key","1B")
     $i++
   }
 }

@@ -12,9 +12,10 @@ See `scripts/GA4_NOTES.md` (coords, UI gotchas) and `scripts/GA4_UIA.md` (contro
 ## Done
 - **2026-07-20**: 5 invoices filled with exact totals; `gridrow` keyboard Tab-nav solved the
   preset-labour problem (a preset autocomplete popup was swallowing the Qty/Price cell clicks).
-- **2026-07-21**: **invoice 90807 (EX03 BOF, Mrs Ayalah Hirst, £411.00) ISSUED** and verified
-  (`header` → `Standard Invoice: 90807 (Issued)`, total 411.00). Issued via **Issue Only** — no
-  payment recorded, so the £411.00 balance stays outstanding.
+- **2026-07-21**: **90807** (EX03 BOF, Mrs Ayalah Hirst, **£411.00**) and **90808** (EA66 VBM,
+  Mrs Aviva Mentzer, **£45.58**) both **ISSUED** and verified (`header` → `(Issued)`, totals read
+  back exactly). Both via **Issue Only** — no payment recorded, so the balances stay outstanding.
+  Both pool rows marked `filled` in Neon (`garagemanagerpro` / `wispy-lake-94196757`).
 
 ## Issue-flow dialog chain (verified live, 2026-07-21)
 Clicking **Issue** does NOT go straight to the payments dialog. Actual sequence:
@@ -33,13 +34,26 @@ Clicking **Issue** does NOT go straight to the payments dialog. Actual sequence:
 `ga4_fill.ps1`'s step-10 blind AbsClick chain does NOT match this sequence — it assumes
 "Yes(Auto)" reminder dialogs. **Fix it or keep issuing supervised.**
 
+## Portal line-item entry — what works (verified live on 90808, 2026-07-21)
+Labour columns are **Desc | Tech | Qty | Unit Price**. Two traps:
+1. Committing the Description opens the **Tech pop-up menu**, which physically covers the
+   Qty/Price cells — clicks aimed at them hit the menu and the value never arrives.
+   **Send Escape after every cell commit.**
+2. **`gridrow` is wrong for a fresh, empty portal row.** GA4 creates the row on commit and returns
+   focus to Description, so the qty overwrites the description and the price is lost. It produced a
+   labour row literally described `"0.5"` with no price. `gridrow` is still fine for rows that
+   already exist; `ga4_fill.ps1` now uses per-cell clicks + Escape throughout.
+
+Also: while a popup is open FileMaker **blanks MainWindowTitle**, so the title-based
+`Get-Process` lookup fails and every command dies `GA4_NOT_FOUND` — including the Escape needed to
+close the popup. `ga4.ps1` now falls back to finding the window by **class** (`FMPRO*`).
+
 ## Next steps
-1. **90808** — not started. No `wo_90808.json` exists yet; needs generating from the source
-   (Neon `serviceHistory` + `serviceLineItems`) before `ga4_fill.ps1` can run.
-2. Mark the pool row filled:
-   `UPDATE "ga4NumberPool" SET status='filled', "filledAt"=now() WHERE "ga4Number"='90807';`
-   *(not yet done for 90807)*
-3. Reconcile `ga4_fill.ps1` step 10 with the real dialog chain above.
+1. **90809** — claimed by web doc 420625, not started. Generate a work order from Neon
+   (`serviceHistory` + `serviceLineItems` where `documentId` = the claiming doc) as for 90808.
+2. Reconcile `ga4_fill.ps1` step 10 (`-Issue`) with the real dialog chain above — it still assumes
+   "Yes(Auto)" reminder dialogs. Until then **always run without `-Issue`** and issue supervised.
+3. Consider filling the Part Number column for parts lines (web `partNumber` is currently dropped).
 
 ## Notes
 - Logged into GA4 as **Admin**; keep the GA4 window **maximized** for stable coords (display is

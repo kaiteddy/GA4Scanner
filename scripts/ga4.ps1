@@ -23,7 +23,10 @@ public class Dpi {
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
+using System.Text;
 public class G {
+    [DllImport("user32.dll")] public static extern IntPtr FindWindowEx(IntPtr p, IntPtr c, string cls, string wnd);
+    [DllImport("user32.dll")] public static extern int GetClassName(IntPtr h, StringBuilder s, int c);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
@@ -33,16 +36,27 @@ public class G {
     [DllImport("user32.dll")] public static extern bool GetCursorPos(out PT p);
     [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, IntPtr e);
     [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint f, IntPtr e);
+    // Find GA4 by WINDOW CLASS (FileMaker runtime = FMPRO*). Needed because while a custom-drawn
+    // popup is open (Tech dropdown, value list) FileMaker BLANKS MainWindowTitle, so the
+    // title-based Get-Process lookup returns nothing and every command dies with GA4_NOT_FOUND.
+    public static IntPtr FindFMPRO(){ IntPtr h=IntPtr.Zero;
+      while((h=FindWindowEx(IntPtr.Zero,h,null,null))!=IntPtr.Zero){ StringBuilder sb=new StringBuilder(256);
+        GetClassName(h,sb,256); if(sb.ToString().ToUpper().Contains("FMPRO")) return h; } return IntPtr.Zero; }
 }
 public struct RECT { public int Left, Top, Right, Bottom; }
 public struct PT { public int X, Y; }
 "@
 $LEFTDOWN=0x0002; $LEFTUP=0x0004; $KEYUP=0x0002
 
-function Get-GA4 {
+function Get-GA4Hwnd {
+  # Preferred: title match (cheap, unambiguous). Fallback: window class, which survives the
+  # title being blanked by an open popup - otherwise an open Tech dropdown makes the very
+  # Escape you need to close it impossible to send.
   $p = Get-Process | Where-Object { $_.MainWindowTitle -like "*Garage Assistant*" } | Select-Object -First 1
-  if (-not $p) { Write-Output "GA4_NOT_FOUND"; exit 1 }
-  return $p
+  if ($p -and $p.MainWindowHandle -ne [IntPtr]::Zero) { return $p.MainWindowHandle }
+  $h = [G]::FindFMPRO()
+  if ($h -eq [IntPtr]::Zero) { Write-Output "GA4_NOT_FOUND"; exit 1 }
+  return $h
 }
 function Focus-GA4($hwnd) {
   if ([G]::IsIconic($hwnd)) { [G]::ShowWindow($hwnd,9) | Out-Null; Start-Sleep -Milliseconds 300 }
@@ -62,8 +76,7 @@ function Capture($hwnd,$out) {
   Write-Output "rect=($($r.Left),$($r.Top)) size=${w}x${h} saved=$out"
 }
 
-$proc = Get-GA4
-$hwnd = $proc.MainWindowHandle
+$hwnd = Get-GA4Hwnd
 
 switch ($Cmd) {
   "shot" {
