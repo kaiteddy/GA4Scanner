@@ -83,7 +83,13 @@ for ($try=1; $try -le 4; $try++) {
   $hd = Header
   if ($hd -and $hd.num -eq $want -and $hd.state -eq "NotIssued") {
     $rv = RegOf (Uia @("get","vehRegistration"))
-    if ($rv -ne "" -and $rv -ne "Required") { Fail "invoice $want already has reg='$rv' - not an empty blank, refusing to write" }
+    # Refuse a blank that already carries a DIFFERENT vehicle - that means we are about to write
+    # over somebody else's document. A reg matching this work order is fine: it just means an
+    # earlier run aborted after the reg step, and continuing is safe (the zero-total check below
+    # still proves nothing has been billed on it).
+    if ($rv -ne "" -and $rv -ne "Required" -and ($rv -replace '\s','') -ne ($reg -replace '\s','')) {
+      Fail "invoice $want already has reg='$rv' (work order says '$reg') - not an empty blank, refusing to write"
+    }
     $t0 = ReadTotal
     if ($null -ne $t0 -and $t0 -ne 0) { Fail "invoice $want total is GBP $t0, not empty - refusing to write" }
     $opened = $true; break
@@ -97,15 +103,21 @@ Write-Host "  identity OK: EXACT invoice $want, Not Issued, empty" -ForegroundCo
 if ($DryRun) { Write-Host "  -DryRun: number-match guard passed, no writes."; exit 0 }
 
 # ---- 2) Registration (two-step commit fires vehicle+customer lookup) -------------------------
-$regNoSpace = $reg -replace '\s',''
-Ga4 @("cell","416","279","$regNoSpace"); Start-Sleep -Milliseconds 1000
-Ga4 @("cell","416","279","$regNoSpace"); Start-Sleep -Milliseconds 1500
+# Type the reg EXACTLY as the work order gives it. Stripping spaces is wrong: GA4 stores cherished
+# plates in its own spaced form (e.g. "24 1DK"), and the unspaced "241DK" instead matches the
+# RETIRED plate record "241DK*(05/11/2018)" on a different vehicle entirely. Found on 90813, where
+# the plate had moved from Mr Kass's Audi A8 to his Kia Sorento - the wrong car was attached and
+# only the reg guard below caught it. Put GA4's exact spelling in the work order.
+Ga4 @("cell","416","279","$reg"); Start-Sleep -Milliseconds 1000
+Ga4 @("cell","416","279","$reg"); Start-Sleep -Milliseconds 1500
 Shot   # capture - an "Open Document Exists" warning may appear; dismiss with Ignore
 # (If present, Ignore is at ~2022,1273. Harmless click if absent lands in the list.)
 Ga4 @("click","2022","1273"); Start-Sleep -Milliseconds 500
 # GUARD: the reg lookup must have attached the RIGHT vehicle (reg field now == work-order reg)
 $rvNow = RegOf (Uia @("get","vehRegistration"))
-if (($rvNow -replace '\s','') -ne $regNoSpace) {
+# Compare space-insensitively: the work order carries GA4's exact spacing ("24 1DK") for entry,
+# but GA4 may echo it back formatted differently, and only the characters matter for identity.
+if (($rvNow -replace '\s','') -ne ($reg -replace '\s','')) {
   Fail "after reg entry the invoice reg='$rvNow' != work-order '$reg' - aborting (wrong vehicle); invoice left unissued"
 }
 Write-Host "  vehicle OK: $rvNow"
