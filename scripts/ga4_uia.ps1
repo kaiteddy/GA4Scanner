@@ -63,7 +63,12 @@ switch($Cmd){
     $btns = $root.FindAll($TS::Descendants,$cond)
     foreach($b in $btns){
       $n = $null; try { $n = $b.Current.Name } catch {}
-      if($n -and $n -match 'Invoice:\s*(\d+)\s*\((Not\s+)?Issued\)'){
+      # An invoice CONVERTED FROM A JOB SHEET carries a "( JS: nnnnn )" reference between the
+      # number and the state - e.g. "Standard Invoice: 90824 ( JS: 93238 )  (Issued)". The old
+      # pattern allowed only whitespace there, so it silently failed to match every
+      # job-sheet-derived invoice - exactly the kind staff create by hand. A failed match
+      # reads as "no invoice open", which made ga4_scan_new report real records as missing.
+      if($n -and $n -match 'Invoice:\s*(\d+)\b.*?\((Not\s+)?Issued\)'){
         $num = $Matches[1]; $issued = if($Matches[2]){ 'NotIssued' } else { 'Issued' }
         Write-Output ("header num=$num state=$issued raw='" + $n.Trim() + "'"); break
       }
