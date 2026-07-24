@@ -98,7 +98,7 @@ Write-Host ""
 Write-Host "Run this to register them (pool = claimable by the web app, ledger = number consumed):"
 Write-Host ""
 $today = Get-Date -Format "yyyy-MM-dd"
-$vals  = ($created | ForEach-Object { "  ('$_','available',0,'Pool replenish $today: GA4 blank created and header-verified', now(), now())" }) -join ",`n"
+$vals  = ($created | ForEach-Object { "  ('$_','available',0,'Pool replenish ${today}: GA4 blank created and header-verified', now(), now())" }) -join ",`n"
 $lvals = ($created | ForEach-Object { "  ('$_','blank',NULL,'GA4 blank created $today by ga4_replenish.ps1')" }) -join ",`n"
 Write-Output @"
 INSERT INTO "ga4NumberLedger" ("ga4Number","state","documentId","note") VALUES
